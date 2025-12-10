@@ -26,4 +26,5 @@ COPY . .
 
 # 5) Avvia Flask con Gunicorn
 # Supponiamo che in app.py tu abbia qualcosa tipo: app = Flask(__name__)
-CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:8000", "app:app"]
+CMD ["sh", "-c", "gunicorn -w 2 -b 0.0.0.0:${PORT:-8000} app:app"]
+
