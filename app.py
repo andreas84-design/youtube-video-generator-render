@@ -98,7 +98,7 @@ def generate():
             os.unlink(audio_path)
             return jsonify({
                 "success": False,
-                "error": f\"ffprobe non riesce a leggere la durata (output='{raw_dur}', size={size})\",
+                "error": f"ffprobe non riesce a leggere la durata (output='{raw_dur}', size={size})",
                 "video_base64": None,
                 "duration": None,
             }), 400
