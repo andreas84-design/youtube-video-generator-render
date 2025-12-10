@@ -8,7 +8,7 @@ from flask import Flask, request, jsonify
 from moviepy.editor import ColorClip
 from moviepy.config import change_settings
 
-# Usa ffmpeg di sistema (7.0.2)
+# Usa ffmpeg di sistema
 change_settings({"FFMPEG_BINARY": "ffmpeg"})
 
 app = Flask(__name__)
@@ -37,7 +37,8 @@ def generate():
     Body JSON atteso:
     {
       "audio_url": "https://.....mp3",
-      "script": "testo completo..."
+      "script": "testo completo...",
+      "audio_duration": 123.45   # opzionale, in secondi
     }
 
     Risposta:
@@ -52,6 +53,7 @@ def generate():
         data = request.get_json(force=True) or {}
         audio_url = data.get("audio_url")
         script = data.get("script", "")
+        audio_duration = data.get("audio_duration")
 
         if not audio_url:
             return jsonify({
@@ -60,6 +62,12 @@ def generate():
                 "video_base64": None,
                 "duration": None,
             }), 400
+
+        # Se audio_duration non è passato o non è valido, usa un fallback
+        try:
+            audio_duration = float(audio_duration)
+        except (TypeError, ValueError):
+            audio_duration = 60.0  # fallback di sicurezza
 
         # 1) Scarica l'MP3 da audio_url
         resp = requests.get(audio_url, timeout=120)
@@ -71,39 +79,12 @@ def generate():
                 "duration": None,
             }), 400
 
-        # Salva audio in un file temporaneo
+        # Salva audio in un file temporaneo (solo per logging / debug futuro)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
             f.write(resp.content)
             audio_path = f.name
 
-        # 2) Leggi la durata usando ffprobe (bypass MoviePy)
-        ffprobe_dur = subprocess.run(
-            [
-                "ffprobe",
-                "-v", "error",
-                "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1",
-                audio_path,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-
-        raw_dur = ffprobe_dur.stdout.strip()
-        try:
-            audio_duration = float(raw_dur)
-        except Exception:
-            size = os.path.getsize(audio_path)
-            os.unlink(audio_path)
-            return jsonify({
-                "success": False,
-                "error": f"ffprobe non riesce a leggere la durata (output='{raw_dur}', size={size})",
-                "video_base64": None,
-                "duration": None,
-            }), 400
-
-        # 3) CREA UN VIDEO SEMPLICE MUTO (sfondo nero) CON QUELLA DURATA
+        # 2) CREA UN VIDEO SEMPLICE MUTO (sfondo nero) CON LA DURATA PASSATA
         video_clip = ColorClip(size=(1920, 1080), color=(0, 0, 0))
         video_clip = video_clip.set_duration(audio_duration)
 
@@ -114,7 +95,7 @@ def generate():
             video_path,
             fps=25,
             codec="libx264",
-            audio=False,      # niente audio in questo test
+            audio=False,
             verbose=False,
             logger=None,
         )
@@ -122,7 +103,7 @@ def generate():
         video_clip.close()
         os.unlink(audio_path)
 
-        # 4) Leggi il video e convertilo in base64
+        # 3) Leggi il video e convertilo in base64
         with open(video_path, "rb") as f:
             video_bytes = f.read()
         os.unlink(video_path)
@@ -146,6 +127,5 @@ def generate():
 
 
 if __name__ == "__main__":
-    # Solo per debug locale; in Railway usiamo gunicorn dal Dockerfile
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port, debug=True)
