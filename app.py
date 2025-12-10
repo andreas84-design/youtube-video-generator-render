@@ -5,10 +5,10 @@ import tempfile
 
 import requests
 from flask import Flask, request, jsonify
-from moviepy.editor import AudioFileClip, ColorClip
+from moviepy.editor import ColorClip
 from moviepy.config import change_settings
 
-# Forza MoviePy a usare il ffmpeg di sistema (7.0.2 installato nel Dockerfile)
+# Usa ffmpeg di sistema (7.0.2)
 change_settings({"FFMPEG_BINARY": "ffmpeg"})
 
 app = Flask(__name__)
@@ -76,32 +76,36 @@ def generate():
             f.write(resp.content)
             audio_path = f.name
 
-        # 2) Controllo rapido con ffmpeg: deve avere una Duration
-        ffprobe = subprocess.run(
-            ["ffmpeg", "-i", audio_path],
+        # 2) Leggi la durata usando ffprobe (bypass MoviePy)
+        ffprobe_dur = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                audio_path,
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
         )
-        log = ffprobe.stdout or ""
-        if "Duration:" not in log:
+
+        raw_dur = ffprobe_dur.stdout.strip()
+        try:
+            audio_duration = float(raw_dur)
+        except Exception:
             size = os.path.getsize(audio_path)
             os.unlink(audio_path)
             return jsonify({
                 "success": False,
-                "error": f"ffmpeg non trova la Duration nell'audio (size={size} bytes)",
+                "error": f\"ffprobe non riesce a leggere la durata (output='{raw_dur}', size={size})\",
                 "video_base64": None,
                 "duration": None,
             }), 400
 
-        # 3) Leggi audio con MoviePy
-        audio_clip = AudioFileClip(audio_path)
-        audio_duration = float(audio_clip.duration)
-
-        # 4) CREA UN VIDEO SEMPLICE (sfondo nero + audio)
-        #    Qui in futuro sostituirai con il tuo VideoGenerator a B-roll.
+        # 3) CREA UN VIDEO SEMPLICE MUTO (sfondo nero) CON QUELLA DURATA
         video_clip = ColorClip(size=(1920, 1080), color=(0, 0, 0))
-        video_clip = video_clip.set_duration(audio_duration).set_audio(audio_clip)
+        video_clip = video_clip.set_duration(audio_duration)
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as vf:
             video_path = vf.name
@@ -110,16 +114,15 @@ def generate():
             video_path,
             fps=25,
             codec="libx264",
-            audio_codec="aac",
+            audio=False,      # niente audio in questo test
             verbose=False,
             logger=None,
         )
 
-        audio_clip.close()
         video_clip.close()
         os.unlink(audio_path)
 
-        # 5) Leggi il video e convertilo in base64
+        # 4) Leggi il video e convertilo in base64
         with open(video_path, "rb") as f:
             video_bytes = f.read()
         os.unlink(video_path)
