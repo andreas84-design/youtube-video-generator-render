@@ -24,6 +24,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 4) Copia il codice dell'app
 COPY . .
 
-# 5) Avvia FastAPI (o simile) con Uvicorn
-# Se la tua app FastAPI è "app = FastAPI()" dentro app.py:
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+# 5) Avvia Flask con Gunicorn
+# Supponiamo che in app.py tu abbia qualcosa tipo: app = Flask(__name__)
+CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:8000", "app:app"]
