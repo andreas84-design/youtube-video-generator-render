@@ -125,7 +125,6 @@ def test_pexels_video():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-
 @app.route('/generate', methods=['POST'])
 def generate():
     try:
@@ -188,15 +187,15 @@ def generate():
                 real_duration = 60.0
 
         final_video_path = None
-        pexels_clips_paths = []
+        pexels_clip_path = None
 
-        # 3. Prova a creare B-roll Pexels (test: UNA sola clip)
+        # 3. Prova Pexels: UNA sola clip, come nel test
         try:
             api_key = os.environ.get("PEXELS_API_KEY")
-            print("PEXELS_API_KEY_PRESENT", bool(api_key), "TOPIC", topic)
+            print("GENERATE_PEXELS_KEY_PRESENT", bool(api_key), "TOPIC", topic)
+
             if api_key:
                 pexel = Pexels(api_key)
-
                 search = pexel.search_videos(
                     query=topic,
                     orientation="landscape",
@@ -204,11 +203,11 @@ def generate():
                     page=1,
                     per_page=5
                 )
-
                 videos = search.get("videos", [])
-                print("PEXELS_VIDEOS_FOUND_IN_GENERATE", len(videos))
+                print("GENERATE_PEXELS_VIDEOS_FOUND", len(videos))
 
-                for vid in videos:
+                if len(videos) > 0:
+                    vid = videos[0]
                     video_files = vid.get("video_files", [])
                     best = None
                     for vf in video_files:
@@ -218,58 +217,55 @@ def generate():
                     if not best and video_files:
                         best = video_files[0]
 
-                    if not best:
-                        continue
-
-                    url = best.get("link")
-                    if not url:
-                        continue
-
-                    r = requests.get(url, stream=True, timeout=30)
-                    if r.status_code != 200:
-                        continue
-
-                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-                    for chunk in r.iter_content(chunk_size=1024 * 1024):
-                        if not chunk:
-                            break
-                        tmp.write(chunk)
-                    tmp.close()
-                    pexels_clips_paths.append(tmp.name)
-
-                # TEST: usa solo la prima clip Pexels
-                if len(pexels_clips_paths) >= 1:
-                    path = pexels_clips_paths[0]
-                    print("USING_PEXELS_CLIP", path)
-
-                    video_clip = VideoFileClip(path).resize((1920, 1080))
-
-                    if video_clip.duration > real_duration:
-                        video_clip = video_clip.subclip(0, real_duration)
-
-                    audio_clip = AudioFileClip(audiopath)
-                    video_clip = video_clip.set_audio(audio_clip)
-
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as vf:
-                        final_video_path = vf.name
-
-                    video_clip.write_videofile(
-                        final_video_path,
-                        fps=25,
-                        codec="libx264",
-                        audio_codec="aac",
-                        verbose=False,
-                        logger=None,
-                    )
-
-                    video_clip.close()
-                    audio_clip.close()
+                    if best:
+                        url = best.get("link")
+                        if url:
+                            r = requests.get(url, stream=True, timeout=30)
+                            if r.status_code == 200:
+                                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+                                for chunk in r.iter_content(chunk_size=1024 * 1024):
+                                    if not chunk:
+                                        break
+                                    tmp.write(chunk)
+                                tmp.close()
+                                pexels_clip_path = tmp.name
+                                print("GENERATE_USING_PEXELS_CLIP", pexels_clip_path)
 
         except Exception as e:
-            print("PEXELS_IN_GENERATE_ERROR", str(e))
-            # se qualcosa va storto, andiamo in fallback
+            print("GENERATE_PEXELS_ERROR", str(e))
+            pexels_clip_path = None
 
-        # 4. Fallback: video nero se Pexels non ha prodotto niente
+        # 4. Se abbiamo una clip Pexels, creiamo il video con quella
+        if pexels_clip_path:
+            try:
+                video_clip = VideoFileClip(pexels_clip_path).resize((1920, 1080))
+
+                if video_clip.duration > real_duration:
+                    video_clip = video_clip.subclip(0, real_duration)
+
+                audio_clip = AudioFileClip(audiopath)
+                video_clip = video_clip.set_audio(audio_clip)
+
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as vf:
+                    final_video_path = vf.name
+
+                video_clip.write_videofile(
+                    final_video_path,
+                    fps=25,
+                    codec="libx264",
+                    audio_codec="aac",
+                    verbose=False,
+                    logger=None,
+                )
+
+                video_clip.close()
+                audio_clip.close()
+
+            except Exception as e:
+                print("GENERATE_MOVIEPY_ERROR", str(e))
+                final_video_path = None
+
+        # 5. Fallback: se final_video_path è ancora None, usa video nero + ffmpeg
         if not final_video_path:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as vf:
                 video_mute_path = vf.name
@@ -326,14 +322,17 @@ def generate():
             except Exception:
                 pass
 
-        # 5. Leggi video finale e converti in base64
+        # 6. Leggi video finale e converti in base64
         with open(final_video_path, "rb") as f:
             videobytes = f.read()
 
         videob64 = base64.b64encode(videobytes).decode("utf-8")
 
-        # 6. Cleanup
-        for p in [audiopath, final_video_path] + pexels_clips_paths:
+        # 7. Cleanup
+        paths_to_clean = [audiopath, final_video_path]
+        if pexels_clip_path:
+            paths_to_clean.append(pexels_clip_path)
+        for p in paths_to_clean:
             try:
                 os.unlink(p)
             except Exception:
