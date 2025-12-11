@@ -25,6 +25,36 @@ def ffmpeg_test():
     )
     firstline = result.stdout.splitlines()[0] if result.stdout else "no output"
     return jsonify({"ffmpeg_output": firstline})
+    
+@app.route('/pexels-test', methods=['GET'])
+def pexels_test():
+    try:
+        topic = request.args.get("topic", "meditation")
+        api_key = os.environ.get("PEXELS_API_KEY")
+        print("PEXELS_TEST_KEY_PRESENT", bool(api_key), "TOPIC", topic)
+
+        if not api_key:
+            return jsonify({"ok": False, "error": "No PEXELS_API_KEY"}), 500
+
+        pexel = Pexels(api_key)
+        search = pexel.search_videos(
+            query=topic,
+            orientation="landscape",
+            size="hd",
+            page=1,
+            per_page=5
+        )
+        videos = search.get("videos", [])
+        print("PEXELS_TEST_VIDEOS_FOUND", len(videos))
+
+        return jsonify({
+            "ok": True,
+            "topic": topic,
+            "videos_found": len(videos),
+        }), 200
+    except Exception as e:
+        print("PEXELS_TEST_ERROR", str(e))
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route('/generate', methods=['POST'])
