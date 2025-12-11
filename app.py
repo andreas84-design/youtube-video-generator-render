@@ -94,6 +94,7 @@ def generate():
         # 3. Prova a creare B-roll Pexels
         try:
             api_key = os.environ.get("PEXELS_API_KEY")
+            print("PEXELS_API_KEY_PRESENT", bool(api_key), "TOPIC", topic)
             if api_key:
                 pexel = Pexels(api_key)
 
