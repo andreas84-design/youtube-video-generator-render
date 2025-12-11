@@ -7,7 +7,6 @@ from flask import Flask, request, jsonify
 from moviepy.editor import ColorClip
 from moviepy.config import change_settings
 
-# Usa ffmpeg/ffprobe di sistema
 change_settings({"FFMPEG_BINARY": "ffmpeg"})
 
 app = Flask(__name__)
@@ -15,7 +14,6 @@ app = Flask(__name__)
 
 @app.route('/ffmpeg-test', methods=['GET'])
 def ffmpeg_test():
-    """Endpoint diagnostico per verificare versione ffmpeg."""
     result = subprocess.run(
         ["ffmpeg", "-version"],
         stdout=subprocess.PIPE,
@@ -28,14 +26,6 @@ def ffmpeg_test():
 
 @app.route('/generate', methods=['POST'])
 def generate():
-    """
-    Body JSON atteso da n8n:
-    {
-        "audiobase64": "...",   # audio MP3 in base64 (Google TTS)
-        "script": "...",
-        "audioduration": 180.0  # durata stimata, usata solo come fallback
-    }
-    """
     try:
         data = request.get_json(force=True) or {}
 
@@ -67,12 +57,11 @@ def generate():
             audiopath = f.name
 
         # 2. Leggi la durata reale dell'MP3 con ffprobe
-        # ffprobe restituisce un JSON con "format": {"duration": "..."}
         ffprobe_cmd = [
             "ffprobe",
-            "-v", "quiet",
-            "-print_format", "json",
-            "-show_format",
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
             audiopath,
         ]
         probe = subprocess.run(
@@ -80,17 +69,17 @@ def generate():
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            timeout=10  # timeout breve per evitare blocchi
         )
 
         real_duration = None
         try:
-            meta = json.loads(probe.stdout)
-            real_duration = float(meta["format"]["duration"])
+            real_duration = float(probe.stdout.strip())
         except Exception:
             pass
 
-        # Fallback se ffprobe non riesce
-        if real_duration is None:
+        # Fallback
+        if real_duration is None or real_duration <= 0:
             try:
                 real_duration = float(audioduration)
             except (TypeError, ValueError):
@@ -132,6 +121,7 @@ def generate():
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            timeout=300  # timeout di sicurezza per ffmpeg
         )
 
         if result.returncode != 0:
@@ -160,7 +150,6 @@ def generate():
             except Exception:
                 pass
 
-        # 7. Risposta OK: durata = durata reale dell'audio
         return jsonify({
             "success": True,
             "error": None,
@@ -168,6 +157,13 @@ def generate():
             "duration": real_duration,
         }), 200
 
+    except subprocess.TimeoutExpired as e:
+        return jsonify({
+            "success": False,
+            "error": f"Timeout durante elaborazione: {str(e)}",
+            "videobase64": None,
+            "duration": None,
+        }), 500
     except Exception as e:
         return jsonify({
             "success": False,
