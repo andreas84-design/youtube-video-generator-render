@@ -265,57 +265,26 @@ def generate():
                 print("GENERATE_MOVIEPY_ERROR", str(e))
                 final_video_path = None
 
-        # 5. Fallback: se final_video_path è ancora None, usa video nero + ffmpeg
+                # 5. Se final_video_path è ancora None, restituiamo errore (niente fallback nero)
         if not final_video_path:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as vf:
-                video_mute_path = vf.name
+            # cleanup base
+            try:
+                os.unlink(audiopath)
+            except Exception:
+                pass
+            if pexels_clip_path:
+                try:
+                    os.unlink(pexels_clip_path)
+                except Exception:
+                    pass
 
-            videoclip = ColorClip(size=(1920, 1080), color=(0, 0, 0))
-            videoclip = videoclip.set_duration(real_duration)
-            videoclip.write_videofile(
-                video_mute_path,
-                fps=25,
-                codec="libx264",
-                audio=False,
-                verbose=False,
-                logger=None,
-            )
-            videoclip.close()
+            return jsonify({
+                "success": False,
+                "error": "Nessuna clip Pexels usata: final_video_path è None",
+                "videobase64": None,
+                "duration": None,
+            }), 500
 
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as vf:
-                final_video_path = vf.name
-
-            ffmpeg_cmd = [
-                "ffmpeg",
-                "-y",
-                "-i", video_mute_path,
-                "-i", audiopath,
-                "-c:v", "copy",
-                "-c:a", "aac",
-                "-shortest",
-                final_video_path,
-            ]
-
-            result = subprocess.run(
-                ffmpeg_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=300
-            )
-
-            if result.returncode != 0:
-                for p in [audiopath, video_mute_path]:
-                    try:
-                        os.unlink(p)
-                    except Exception:
-                        pass
-                return jsonify({
-                    "success": False,
-                    "error": f"ffmpeg muxing fallito: {result.stderr[:500]}",
-                    "videobase64": None,
-                    "duration": None,
-                }), 400
 
             try:
                 os.unlink(video_mute_path)
