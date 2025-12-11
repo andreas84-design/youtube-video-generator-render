@@ -3,9 +3,12 @@ import base64
 import subprocess
 import tempfile
 import json
+import requests
+
 from flask import Flask, request, jsonify
-from moviepy.editor import ColorClip
+from moviepy.editor import ColorClip, VideoFileClip, concatenate_videoclips, AudioFileClip
 from moviepy.config import change_settings
+from pexelsapi.pexels import Pexels
 
 change_settings({"FFMPEG_BINARY": "ffmpeg"})
 
