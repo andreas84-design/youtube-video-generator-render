@@ -35,6 +35,7 @@ def generate():
         audiobase64 = data.get("audiobase64")
         script = data.get("script", "")
         audioduration = data.get("audioduration")
+        topic = data.get("topic") or script[:60] or "meditation"
 
         if not audiobase64:
             return jsonify({
@@ -59,7 +60,7 @@ def generate():
             f.write(audio_bytes)
             audiopath = f.name
 
-        # 2. Leggi la durata reale dell'MP3 con ffprobe
+        # 2. Durata reale audio con ffprobe
         ffprobe_cmd = [
             "ffprobe",
             "-v", "error",
@@ -72,7 +73,7 @@ def generate():
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            timeout=10  # timeout breve per evitare blocchi
+            timeout=10
         )
 
         real_duration = None
@@ -81,64 +82,159 @@ def generate():
         except Exception:
             pass
 
-        # Fallback
         if real_duration is None or real_duration <= 0:
             try:
                 real_duration = float(audioduration)
             except (TypeError, ValueError):
                 real_duration = 60.0
 
-        # 3. Crea video muto nero 1920x1080 con durata = real_duration
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as vf:
-            video_mute_path = vf.name
+        final_video_path = None
+        pexels_clips_paths = []
 
-        videoclip = ColorClip(size=(1920, 1080), color=(0, 0, 0))
-        videoclip = videoclip.set_duration(real_duration)
-        videoclip.write_videofile(
-            video_mute_path,
-            fps=25,
-            codec="libx264",
-            audio=False,
-            verbose=False,
-            logger=None,
-        )
-        videoclip.close()
+        # 3. Prova a creare B-roll Pexels
+        try:
+            api_key = os.environ.get("PEXELS_API_KEY")
+            if api_key:
+                pexel = Pexels(api_key)
 
-        # 4. Usa ffmpeg per aggiungere l'audio al video muto
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as vf:
-            final_video_path = vf.name
+                search = pexel.search_videos(
+                    query=topic,
+                    orientation="landscape",
+                    size="hd",
+                    page=1,
+                    per_page=10
+                )
 
-        ffmpeg_cmd = [
-            "ffmpeg",
-            "-y",
-            "-i", video_mute_path,
-            "-i", audiopath,
-            "-c:v", "copy",
-            "-c:a", "aac",
-            "-shortest",
-            final_video_path,
-        ]
+                videos = search.get("videos", [])
 
-        result = subprocess.run(
-            ffmpeg_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=300  # timeout di sicurezza per ffmpeg
-        )
+                for vid in videos:
+                    video_files = vid.get("video_files", [])
+                    best = None
+                    for vf in video_files:
+                        if vf.get("width", 0) >= 1920 and vf.get("height", 0) >= 1080:
+                            best = vf
+                            break
+                    if not best and video_files:
+                        best = video_files[0]
 
-        if result.returncode != 0:
-            for p in [audiopath, video_mute_path]:
-                try:
-                    os.unlink(p)
-                except Exception:
-                    pass
-            return jsonify({
-                "success": False,
-                "error": f"ffmpeg muxing fallito: {result.stderr[:500]}",
-                "videobase64": None,
-                "duration": None,
-            }), 400
+                    if not best:
+                        continue
+
+                    url = best.get("link")
+                    if not url:
+                        continue
+
+                    r = requests.get(url, stream=True, timeout=30)
+                    if r.status_code != 200:
+                        continue
+
+                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+                    for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        if not chunk:
+                            break
+                        tmp.write(chunk)
+                    tmp.close()
+                    pexels_clips_paths.append(tmp.name)
+
+                if len(pexels_clips_paths) >= 2:
+                    clips = []
+                    for path in pexels_clips_paths:
+                        clip = VideoFileClip(path).resize((1920, 1080))
+                        clips.append(clip)
+
+                    assembled = []
+                    total = 0
+                    idx = 0
+                    while total < real_duration and clips:
+                        c = clips[idx % len(clips)]
+                        remaining = real_duration - total
+                        if c.duration > remaining:
+                            c = c.subclip(0, remaining)
+                        assembled.append(c)
+                        total += c.duration
+                        idx += 1
+
+                    video_clip = concatenate_videoclips(assembled, method="compose")
+
+                    audio_clip = AudioFileClip(audiopath)
+                    video_clip = video_clip.set_audio(audio_clip)
+
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as vf:
+                        final_video_path = vf.name
+
+                    video_clip.write_videofile(
+                        final_video_path,
+                        fps=25,
+                        codec="libx264",
+                        audio_codec="aac",
+                        verbose=False,
+                        logger=None,
+                    )
+
+                    video_clip.close()
+                    audio_clip.close()
+                    for c in clips:
+                        c.close()
+
+        except Exception:
+            pass
+
+        # 4. Fallback: video nero se Pexels non ha prodotto niente
+        if not final_video_path:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as vf:
+                video_mute_path = vf.name
+
+            videoclip = ColorClip(size=(1920, 1080), color=(0, 0, 0))
+            videoclip = videoclip.set_duration(real_duration)
+            videoclip.write_videofile(
+                video_mute_path,
+                fps=25,
+                codec="libx264",
+                audio=False,
+                verbose=False,
+                logger=None,
+            )
+            videoclip.close()
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as vf:
+                final_video_path = vf.name
+
+            ffmpeg_cmd = [
+                "ffmpeg",
+                "-y",
+                "-i", video_mute_path,
+                "-i", audiopath,
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-shortest",
+                final_video_path,
+            ]
+
+            result = subprocess.run(
+                ffmpeg_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=300
+            )
+
+            if result.returncode != 0:
+                for p in [audiopath, video_mute_path]:
+                    try:
+                        os.unlink(p)
+                    except Exception:
+                        pass
+                return jsonify({
+                    "success": False,
+                    "error": f"ffmpeg muxing fallito: {result.stderr[:500]}",
+                    "videobase64": None,
+                    "duration": None,
+                }), 400
+
+            try:
+                os.unlink(video_mute_path)
+            except Exception:
+                pass
 
         # 5. Leggi video finale e converti in base64
         with open(final_video_path, "rb") as f:
@@ -147,7 +243,7 @@ def generate():
         videob64 = base64.b64encode(videobytes).decode("utf-8")
 
         # 6. Cleanup
-        for p in [audiopath, video_mute_path, final_video_path]:
+        for p in [audiopath, final_video_path] + pexels_clips_paths:
             try:
                 os.unlink(p)
             except Exception:
