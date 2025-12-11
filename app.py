@@ -2,11 +2,11 @@ import os
 import base64
 import subprocess
 import tempfile
-import requests
 from flask import Flask, request, jsonify
 from moviepy.editor import ColorClip
 from moviepy.config import change_settings
 
+# Usa ffmpeg di sistema
 change_settings({"FFMPEG_BINARY": "ffmpeg"})
 
 app = Flask(__name__)
@@ -16,7 +16,7 @@ app = Flask(__name__)
 def ffmpeg_test():
     """Endpoint diagnostico per verificare versione ffmpeg."""
     result = subprocess.run(
-        ['ffmpeg', '-version'],
+        ["ffmpeg", "-version"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True
@@ -28,34 +28,24 @@ def ffmpeg_test():
 @app.route('/generate', methods=['POST'])
 def generate():
     """
-    Endpoint principale chiamato da n8n.
-
-    Body JSON:
+    Body JSON atteso:
     {
-        "audiourl": "https://drive.google.com/uc?export=download&id=...",
+        "audiobase64": "...",   # audio MP3 in base64 da Google TTS
         "script": "...",
-        "audioduration": 90.5
-    }
-
-    Risposta:
-    {
-        "success": true/false,
-        "videobase64": "...",
-        "duration": 90.5,
-        "error": null
+        "audioduration": 90.5   # durata in secondi calcolata in n8n
     }
     """
     try:
-        # 1. Parsing input
         data = request.get_json(force=True) or {}
-        audiourl = data.get("audiourl")
+
+        audiobase64 = data.get("audiobase64")
         script = data.get("script", "")
         audioduration = data.get("audioduration")
 
-        if not audiourl:
+        if not audiobase64:
             return jsonify({
                 "success": False,
-                "error": "audiourl mancante o vuoto",
+                "error": "audiobase64 mancante o vuoto",
                 "videobase64": None,
                 "duration": None
             }), 400
@@ -65,21 +55,22 @@ def generate():
         except (TypeError, ValueError):
             real_duration = 60.0
 
-        # 2. Scarica MP3 da audiourl
-        resp = requests.get(audiourl, timeout=120)
-        if resp.status_code != 200:
+        # 1. Decodifica base64 in MP3 temporaneo
+        try:
+            audio_bytes = base64.b64decode(audiobase64)
+        except Exception as e:
             return jsonify({
                 "success": False,
-                "error": f"Download audio fallito: status {resp.status_code}",
+                "error": f"Decodifica base64 fallita: {str(e)}",
                 "videobase64": None,
                 "duration": None
             }), 400
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
-            f.write(resp.content)
+            f.write(audio_bytes)
             audiopath = f.name
 
-        # 3. Crea video muto nero 1920x1080 con durata passata
+        # 2. Crea video muto nero 1920x1080 con durata passata
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as vf:
             video_mute_path = vf.name
 
@@ -89,24 +80,24 @@ def generate():
             video_mute_path,
             fps=25,
             codec="libx264",
-            audio=False,  # Nessun audio qui
+            audio=False,
             verbose=False,
             logger=None
         )
         videoclip.close()
 
-        # 4. Usa ffmpeg per aggiungere l'audio al video muto
+        # 3. Usa ffmpeg per aggiungere l'audio al video muto
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as vf:
             final_video_path = vf.name
 
         ffmpeg_cmd = [
             "ffmpeg",
-            "-y",  # Sovrascrivi output
-            "-i", video_mute_path,  # Video muto
-            "-i", audiopath,         # Audio MP3
-            "-c:v", "copy",          # Copia video senza re-encode
-            "-c:a", "aac",           # Audio codec AAC
-            "-shortest",             # Durata = minore tra video e audio
+            "-y",
+            "-i", video_mute_path,
+            "-i", audiopath,
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-shortest",
             final_video_path
         ]
 
@@ -118,9 +109,11 @@ def generate():
         )
 
         if result.returncode != 0:
-            # ffmpeg fallito
-            os.unlink(audiopath)
-            os.unlink(video_mute_path)
+            try:
+                os.unlink(audiopath)
+                os.unlink(video_mute_path)
+            except Exception:
+                pass
             return jsonify({
                 "success": False,
                 "error": f"ffmpeg muxing fallito: {result.stderr[:500]}",
@@ -128,29 +121,19 @@ def generate():
                 "duration": None
             }), 400
 
-        # 5. Leggi video finale e converti in base64
+        # 4. Leggi video finale e converti in base64
         with open(final_video_path, "rb") as f:
             videobytes = f.read()
 
         videob64 = base64.b64encode(videobytes).decode("utf-8")
 
-        # 6. Cleanup
-        try:
-            os.unlink(audiopath)
-        except Exception:
-            pass
+        # 5. Cleanup
+        for p in [audiopath, video_mute_path, final_video_path]:
+            try:
+                os.unlink(p)
+            except Exception:
+                pass
 
-        try:
-            os.unlink(video_mute_path)
-        except Exception:
-            pass
-
-        try:
-            os.unlink(final_video_path)
-        except Exception:
-            pass
-
-        # 7. Risposta OK
         return jsonify({
             "success": True,
             "error": None,
