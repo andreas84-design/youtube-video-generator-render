@@ -7,8 +7,8 @@ from flask import Flask, request, jsonify
 from moviepy.editor import ColorClip, AudioFileClip
 from moviepy.config import change_settings
 
-# Forza MoviePy a usare ffmpeg 7.0.2 di sistema
-change_settings(FFMPEG_BINARY="ffmpeg")
+# Forza MoviePy a usare ffmpeg 7.0.2 di sistema (SINTASSI CORRETTA)
+change_settings({"FFMPEG_BINARY": "ffmpeg"})
 
 app = Flask(__name__)
 
@@ -34,15 +34,7 @@ def generate():
     {
         "audiourl": "https://drive.google.com/uc?export=download&id=...",
         "script": "Testo script completo...",
-        "audioduration": 90.5  # Durata in secondi (opzionale)
-    }
-    
-    Risposta:
-    {
-        "success": true/false,
-        "videobase64": "...",  # Video MP4 in base64
-        "duration": 90.5,      # Durata effettiva audio
-        "error": null          # Messaggio errore se success=false
+        "audioduration": 90.5
     }
     """
     try:
@@ -52,7 +44,6 @@ def generate():
         script = data.get('script', '')
         audioduration = data.get('audioduration')
         
-        # Validazione input
         if not audiourl:
             return jsonify({
                 'success': False, 
@@ -61,11 +52,10 @@ def generate():
                 'duration': None
             }), 400
         
-        # Converti audioduration in float (fallback 60s se mancante)
         try:
             audioduration = float(audioduration)
         except (TypeError, ValueError):
-            audioduration = 60.0  # Fallback di sicurezza
+            audioduration = 60.0
         
         
         # 2. SCARICA MP3 DA AUDIOURL
@@ -78,18 +68,17 @@ def generate():
                 'duration': None
             }), 400
         
-        # Salva MP3 in file temporaneo
         with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as f:
             f.write(resp.content)
             audiopath = f.name
         
         
-        # 3. CARICA AUDIO CON MOVIEPY E LEGGI DURATA REALE
+        # 3. CARICA AUDIO CON MOVIEPY
         try:
             audioclip = AudioFileClip(audiopath)
-            real_duration = audioclip.duration  # Durata effettiva del file MP3
+            real_duration = audioclip.duration
         except Exception as e:
-            os.unlink(audiopath)  # Pulisci file temp
+            os.unlink(audiopath)
             return jsonify({
                 'success': False,
                 'error': f'MoviePy non riesce a leggere audio: {str(e)}',
@@ -98,40 +87,38 @@ def generate():
             }), 400
         
         
-        # 4. CREA VIDEO: SFONDO NERO + AUDIO SINCRONIZZATO
-        # ColorClip nero 1920x1080 con durata = durata audio
+        # 4. CREA VIDEO: SFONDO NERO + AUDIO
         videoclip = ColorClip(size=(1920, 1080), color=(0, 0, 0))
         videoclip = videoclip.set_duration(real_duration)
-        videoclip = videoclip.set_audio(audioclip)  # AGGIUNGI AUDIO AL VIDEO
+        videoclip = videoclip.set_audio(audioclip)
         
-        # Salva video MP4 in file temporaneo
         with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as vf:
             videopath = vf.name
             videoclip.write_videofile(
                 videopath,
                 fps=25,
                 codec='libx264',
-                audio_codec='aac',  # IMPORTANTE: esporta audio in AAC
+                audio_codec='aac',
                 verbose=False,
                 logger=None
             )
         
         
-        # 5. LEGGI VIDEO MP4 E CONVERTI IN BASE64
+        # 5. CONVERTI VIDEO IN BASE64
         with open(videopath, 'rb') as f:
             videobytes = f.read()
         
         videob64 = base64.b64encode(videobytes).decode('utf-8')
         
         
-        # 6. CLEANUP FILE TEMPORANEI
+        # 6. CLEANUP
         audioclip.close()
         videoclip.close()
-        os.unlink(audiopath)  # Elimina MP3 temp
-        os.unlink(videopath)  # Elimina MP4 temp
+        os.unlink(audiopath)
+        os.unlink(videopath)
         
         
-        # 7. RISPOSTA SUCCESS
+        # 7. RISPOSTA
         return jsonify({
             'success': True,
             'error': None,
@@ -140,7 +127,6 @@ def generate():
         }), 200
         
     except Exception as e:
-        # Gestione errori imprevisti
         return jsonify({
             'success': False,
             'error': str(e),
@@ -150,6 +136,5 @@ def generate():
 
 
 if __name__ == '__main__':
-    # Solo per debug locale - Railway usa gunicorn
     port = int(os.environ.get('PORT', 8000))
     app.run(host='0.0.0.0', port=port, debug=True)
