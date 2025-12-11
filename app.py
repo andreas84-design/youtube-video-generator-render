@@ -4,10 +4,9 @@ import subprocess
 import tempfile
 import requests
 from flask import Flask, request, jsonify
-from moviepy.editor import ColorClip, AudioFileClip
+from moviepy.editor import ColorClip
 from moviepy.config import change_settings
 
-# Usa ffmpeg di sistema installato nel Dockerfile
 change_settings({"FFMPEG_BINARY": "ffmpeg"})
 
 app = Flask(__name__)
@@ -15,7 +14,7 @@ app = Flask(__name__)
 
 @app.route('/ffmpeg-test', methods=['GET'])
 def ffmpeg_test():
-    """Endpoint diagnostico per verificare la versione di ffmpeg nel container."""
+    """Endpoint diagnostico per verificare versione ffmpeg."""
     result = subprocess.run(
         ['ffmpeg', '-version'],
         stdout=subprocess.PIPE,
@@ -31,19 +30,19 @@ def generate():
     """
     Endpoint principale chiamato da n8n.
 
-    Body JSON atteso:
+    Body JSON:
     {
         "audiourl": "https://drive.google.com/uc?export=download&id=...",
-        "script": "Testo script completo...",
-        "audioduration": 90.5    # durata in secondi calcolata in n8n
+        "script": "...",
+        "audioduration": 90.5
     }
 
     Risposta:
     {
         "success": true/false,
-        "videobase64": "...",    # MP4 base64
+        "videobase64": "...",
         "duration": 90.5,
-        "error": "messaggio opzionale"
+        "error": null
     }
     """
     try:
@@ -61,7 +60,6 @@ def generate():
                 "duration": None
             }), 400
 
-        # Durata: usa il valore passato da n8n (fallback 60s)
         try:
             real_duration = float(audioduration)
         except (TypeError, ValueError):
@@ -81,54 +79,74 @@ def generate():
             f.write(resp.content)
             audiopath = f.name
 
-        # 3. Carica audio con MoviePy SENZA leggerne la durata
-        try:
-            audioclip = AudioFileClip(audiopath)
-        except Exception as e:
+        # 3. Crea video muto nero 1920x1080 con durata passata
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as vf:
+            video_mute_path = vf.name
+
+        videoclip = ColorClip(size=(1920, 1080), color=(0, 0, 0))
+        videoclip = videoclip.set_duration(real_duration)
+        videoclip.write_videofile(
+            video_mute_path,
+            fps=25,
+            codec="libx264",
+            audio=False,  # Nessun audio qui
+            verbose=False,
+            logger=None
+        )
+        videoclip.close()
+
+        # 4. Usa ffmpeg per aggiungere l'audio al video muto
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as vf:
+            final_video_path = vf.name
+
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-y",  # Sovrascrivi output
+            "-i", video_mute_path,  # Video muto
+            "-i", audiopath,         # Audio MP3
+            "-c:v", "copy",          # Copia video senza re-encode
+            "-c:a", "aac",           # Audio codec AAC
+            "-shortest",             # Durata = minore tra video e audio
+            final_video_path
+        ]
+
+        result = subprocess.run(
+            ffmpeg_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        if result.returncode != 0:
+            # ffmpeg fallito
             os.unlink(audiopath)
+            os.unlink(video_mute_path)
             return jsonify({
                 "success": False,
-                "error": f"MoviePy non riesce a usare audio: {str(e)}",
+                "error": f"ffmpeg muxing fallito: {result.stderr[:500]}",
                 "videobase64": None,
                 "duration": None
             }), 400
 
-        # 4. Crea video nero 1920x1080 con durata = real_duration e audio TTS
-        videoclip = ColorClip(size=(1920, 1080), color=(0, 0, 0))
-        videoclip = videoclip.set_duration(real_duration)
-        videoclip = videoclip.set_audio(audioclip)
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as vf:
-            videopath = vf.name
-            videoclip.write_videofile(
-                videopath,
-                fps=25,
-                codec="libx264",
-                audio_codec="aac",
-                verbose=False,
-                logger=None
-            )
-
-        # 5. Leggi MP4 e converti in base64
-        with open(videopath, "rb") as f:
+        # 5. Leggi video finale e converti in base64
+        with open(final_video_path, "rb") as f:
             videobytes = f.read()
 
         videob64 = base64.b64encode(videobytes).decode("utf-8")
 
         # 6. Cleanup
         try:
-            audioclip.close()
-            videoclip.close()
-        except Exception:
-            pass
-
-        try:
             os.unlink(audiopath)
         except Exception:
             pass
 
         try:
-            os.unlink(videopath)
+            os.unlink(video_mute_path)
+        except Exception:
+            pass
+
+        try:
+            os.unlink(final_video_path)
         except Exception:
             pass
 
@@ -141,7 +159,6 @@ def generate():
         }), 200
 
     except Exception as e:
-        # Errore imprevisto
         return jsonify({
             "success": False,
             "error": str(e),
