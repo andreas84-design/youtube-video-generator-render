@@ -167,25 +167,14 @@ def generate():
                     tmp.close()
                     pexels_clips_paths.append(tmp.name)
 
-                if len(pexels_clips_paths) >= 2:
-                    clips = []
-                    for path in pexels_clips_paths:
-                        clip = VideoFileClip(path).resize((1920, 1080))
-                        clips.append(clip)
+                                if len(pexels_clips_paths) >= 1:
+                    # Usa solo la prima clip Pexels e tagliala alla durata dell'audio
+                    path = pexels_clips_paths[0]
+                    video_clip = VideoFileClip(path).resize((1920, 1080))
 
-                    assembled = []
-                    total = 0
-                    idx = 0
-                    while total < real_duration and clips:
-                        c = clips[idx % len(clips)]
-                        remaining = real_duration - total
-                        if c.duration > remaining:
-                            c = c.subclip(0, remaining)
-                        assembled.append(c)
-                        total += c.duration
-                        idx += 1
+                    if video_clip.duration > real_duration:
+                        video_clip = video_clip.subclip(0, real_duration)
 
-                    video_clip = concatenate_videoclips(assembled, method="compose")
 
                     audio_clip = AudioFileClip(audiopath)
                     video_clip = video_clip.set_audio(audio_clip)
