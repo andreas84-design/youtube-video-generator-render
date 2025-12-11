@@ -121,7 +121,7 @@ def generate():
         final_video_path = None
         pexels_clips_paths = []
 
-        # 3. Prova a creare B-roll Pexels
+        # 3. Prova a creare B-roll Pexels (test: UNA sola clip)
         try:
             api_key = os.environ.get("PEXELS_API_KEY")
             print("PEXELS_API_KEY_PRESENT", bool(api_key), "TOPIC", topic)
@@ -133,10 +133,11 @@ def generate():
                     orientation="landscape",
                     size="hd",
                     page=1,
-                    per_page=10
+                    per_page=5
                 )
 
                 videos = search.get("videos", [])
+                print("PEXELS_VIDEOS_FOUND_IN_GENERATE", len(videos))
 
                 for vid in videos:
                     video_files = vid.get("video_files", [])
@@ -167,14 +168,15 @@ def generate():
                     tmp.close()
                     pexels_clips_paths.append(tmp.name)
 
-                                if len(pexels_clips_paths) >= 1:
-                    # Usa solo la prima clip Pexels e tagliala alla durata dell'audio
+                # TEST: usa solo la prima clip Pexels
+                if len(pexels_clips_paths) >= 1:
                     path = pexels_clips_paths[0]
+                    print("USING_PEXELS_CLIP", path)
+
                     video_clip = VideoFileClip(path).resize((1920, 1080))
 
                     if video_clip.duration > real_duration:
                         video_clip = video_clip.subclip(0, real_duration)
-
 
                     audio_clip = AudioFileClip(audiopath)
                     video_clip = video_clip.set_audio(audio_clip)
@@ -193,11 +195,10 @@ def generate():
 
                     video_clip.close()
                     audio_clip.close()
-                    for c in clips:
-                        c.close()
 
-        except Exception:
-            pass
+        except Exception as e:
+            print("PEXELS_IN_GENERATE_ERROR", str(e))
+            # se qualcosa va storto, andiamo in fallback
 
         # 4. Fallback: video nero se Pexels non ha prodotto niente
         if not final_video_path:
@@ -290,6 +291,7 @@ def generate():
             "videobase64": None,
             "duration": None,
         }), 500
+
 
 
 if __name__ == "__main__":
