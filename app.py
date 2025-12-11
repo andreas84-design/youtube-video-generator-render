@@ -56,6 +56,75 @@ def pexels_test():
         print("PEXELS_TEST_ERROR", str(e))
         return jsonify({"ok": False, "error": str(e)}), 500
 
+@app.route('/test-pexels-video', methods=['GET'])
+def test_pexels_video():
+    try:
+        topic = request.args.get("topic", "meditation")
+        api_key = os.environ.get("PEXELS_API_KEY")
+        
+        if not api_key:
+            return jsonify({"ok": False, "error": "No PEXELS_API_KEY"}), 500
+
+        pexel = Pexels(api_key)
+        search = pexel.search_videos(
+            query=topic,
+            orientation="landscape",
+            size="hd",
+            page=1,
+            per_page=5
+        )
+        videos = search.get("videos", [])
+        
+        if len(videos) == 0:
+            return jsonify({"ok": False, "error": "No videos found"}), 200
+
+        # Scarica prima clip
+        vid = videos[0]
+        video_files = vid.get("video_files", [])
+        best = None
+        for vf in video_files:
+            if vf.get("width", 0) >= 1920 and vf.get("height", 0) >= 1080:
+                best = vf
+                break
+        if not best and video_files:
+            best = video_files[0]
+
+        if not best:
+            return jsonify({"ok": False, "error": "No valid video file"}), 200
+
+        url = best.get("link")
+        r = requests.get(url, stream=True, timeout=30)
+        if r.status_code != 200:
+            return jsonify({"ok": False, "error": f"Download failed: {r.status_code}"}), 200
+
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+        for chunk in r.iter_content(chunk_size=1024 * 1024):
+            if not chunk:
+                break
+            tmp.write(chunk)
+        tmp.close()
+
+        # Prova a caricare con MoviePy
+        clip = VideoFileClip(tmp.name)
+        duration = clip.duration
+        width = clip.w
+        height = clip.h
+        clip.close()
+
+        os.unlink(tmp.name)
+
+        return jsonify({
+            "ok": True,
+            "topic": topic,
+            "duration": duration,
+            "width": width,
+            "height": height,
+        }), 200
+
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 
 @app.route('/generate', methods=['POST'])
 def generate():
