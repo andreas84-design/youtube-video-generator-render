@@ -3,3 +3,4 @@ gunicorn==21.2.0
 requests==2.31.0
 moviepy==1.0.3
 imageio-ffmpeg==0.4.9
+pexels-api-py
