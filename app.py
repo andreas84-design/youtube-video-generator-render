@@ -98,7 +98,7 @@ def generate():
                 "duration": None,
             }), 400
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as f:
             f.write(audio_bytes)
             audiopath = f.name
 
