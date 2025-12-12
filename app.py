@@ -1,16 +1,35 @@
 import os
 import base64
-import subprocess
-import tempfile
 import json
+import tempfile
+import subprocess
+
 import requests
 from flask import Flask, request, jsonify
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 
 app = Flask(__name__)
 
-@app.route('/ffmpeg-test', methods=['GET'])
+# Config Google Drive
+DRIVE_FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID")
+GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+
+
+def get_drive_service():
+    if not GOOGLE_SERVICE_ACCOUNT_JSON:
+        raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON non configurata")
+    info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+    creds = service_account.Credentials.from_service_account_info(
+        info,
+        scopes=["https://www.googleapis.com/auth/drive.file"],
+    )
+    return build("drive", "v3", credentials=creds)
+
+
+@app.route("/ffmpeg-test", methods=["GET"])
 def ffmpeg_test():
-    """Endpoint diagnostico per verificare versione ffmpeg."""
     result = subprocess.run(
         ["ffmpeg", "-version"],
         stdout=subprocess.PIPE,
@@ -20,45 +39,9 @@ def ffmpeg_test():
     firstline = result.stdout.splitlines()[0] if result.stdout else "no output"
     return jsonify({"ffmpeg_output": firstline})
 
-@app.route('/test-pexels', methods=['GET'])
-def test_pexels():
-    """Test connessione API Pexels."""
-    api_key = os.environ.get("PEXELS_API_KEY")
-    if not api_key:
-        return jsonify({"success": False, "error": "PEXELS_API_KEY non configurata"}), 500
 
-    try:
-        headers = {"Authorization": api_key}
-        response = requests.get(
-            "https://api.pexels.com/videos/search",
-            headers=headers,
-            params={"query": "meditation nature", "orientation": "landscape", "per_page": 3},
-            timeout=30
-        )
-        response.raise_for_status()
-        data = response.json()
-        videos = data.get("videos", [])
-
-        return jsonify({
-            "success": True,
-            "api_key_configured": True,
-            "videos_found": len(videos),
-            "first_video_id": videos[0]["id"] if videos else None
-        }), 200
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/generate', methods=['POST'])
+@app.route("/generate", methods=["POST"])
 def generate():
-    """
-    Body JSON atteso da n8n:
-    {
-        "audiobase64": "...",      # audio in base64 (Google TTS)
-        "script": "...",           # testo script completo
-        "audioduration": 180.0,    # durata stimata (fallback)
-        "broll_keywords": "woman walking, healthy breakfast"  # keywords per Pexels
-    }
-    """
     audiopath = None
     audio_wav_path = None
     pexels_clip_path = None
@@ -76,11 +59,10 @@ def generate():
             return jsonify({
                 "success": False,
                 "error": "audiobase64 mancante o vuoto",
-                "videobase64": None,
+                "video_url": None,
                 "duration": None,
             }), 400
 
-        # Fallback: topic da prime parole dello script
         if not broll_keywords:
             words = script.split()[:8]
             broll_keywords = " ".join(words) if words else "wellness meditation"
@@ -88,14 +70,14 @@ def generate():
         query_keywords = broll_keywords.split(",")
         pexels_query = query_keywords[0].strip() if query_keywords else broll_keywords
 
-        # 1. Decodifica base64 in file temporaneo
+        # 1. decode audio base64 -> temp .bin
         try:
             audio_bytes = base64.b64decode(audiobase64)
         except Exception as e:
             return jsonify({
                 "success": False,
                 "error": f"Decodifica base64 fallita: {str(e)}",
-                "videobase64": None,
+                "video_url": None,
                 "duration": None,
             }), 400
 
@@ -103,7 +85,7 @@ def generate():
             f.write(audio_bytes)
             audiopath = f.name
 
-        # 2. Converti audio in WAV per compatibilità universale
+        # 2. convert audio to WAV 48kHz (universal)
         audio_wav_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
         audio_wav_path = audio_wav_tmp.name
         audio_wav_tmp.close()
@@ -125,11 +107,10 @@ def generate():
         if conv_result.returncode != 0:
             raise Exception(f"Conversione audio fallita: {conv_result.stderr}")
 
-        # Elimina il file .bin originale e usa il WAV
         os.unlink(audiopath)
         audiopath = audio_wav_path
 
-        # 3. Durata reale dell'audio con ffprobe
+        # 3. real duration from WAV
         ffprobe_cmd = [
             "ffprobe",
             "-v", "error",
@@ -142,9 +123,8 @@ def generate():
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            timeout=10
+            timeout=10,
         )
-
         real_duration = None
         try:
             real_duration = float(probe.stdout.strip())
@@ -157,13 +137,13 @@ def generate():
             except (TypeError, ValueError):
                 real_duration = 60.0
 
-        # 4. Scarica clip Pexels (REST API)
+        # 4. Pexels search
         api_key = os.environ.get("PEXELS_API_KEY")
         if not api_key:
             return jsonify({
                 "success": False,
                 "error": "PEXELS_API_KEY non configurata in Railway",
-                "videobase64": None,
+                "video_url": None,
                 "duration": None,
             }), 500
 
@@ -171,14 +151,13 @@ def generate():
         search_params = {
             "query": pexels_query,
             "orientation": "landscape",
-            "per_page": 5
+            "per_page": 5,
         }
-
         search_response = requests.get(
             "https://api.pexels.com/videos/search",
             headers=headers,
             params=search_params,
-            timeout=30
+            timeout=30,
         )
         search_response.raise_for_status()
         search_data = search_response.json()
@@ -188,7 +167,7 @@ def generate():
             return jsonify({
                 "success": False,
                 "error": f"Nessun video Pexels trovato per query: '{pexels_query}'",
-                "videobase64": None,
+                "video_url": None,
                 "duration": None,
             }), 500
 
@@ -197,11 +176,10 @@ def generate():
             return jsonify({
                 "success": False,
                 "error": "Nessun file video disponibile nel risultato Pexels",
-                "videobase64": None,
+                "video_url": None,
                 "duration": None,
             }), 500
 
-        # Scegli versione HD se possibile
         hd_files = [vf for vf in video_files if vf.get("width", 0) >= 1920]
         if hd_files:
             best_video = max(hd_files, key=lambda x: x.get("width", 0))
@@ -213,14 +191,13 @@ def generate():
             return jsonify({
                 "success": False,
                 "error": "URL video Pexels non disponibile",
-                "videobase64": None,
+                "video_url": None,
                 "duration": None,
             }), 500
 
-        # 5. Scarica video Pexels
+        # 5. download pexels video
         r = requests.get(video_url, stream=True, timeout=120)
         r.raise_for_status()
-
         pexels_clip_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         for chunk in r.iter_content(chunk_size=1024 * 1024):
             if chunk:
@@ -228,29 +205,28 @@ def generate():
         pexels_clip_tmp.close()
         pexels_clip_path = pexels_clip_tmp.name
 
-        # 6. Durata clip Pexels
+        # 6. get clip duration
         probe_clip = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", pexels_clip_path],
             stdout=subprocess.PIPE,
             text=True,
-            timeout=10
+            timeout=10,
         )
-
         clip_duration = 10.0
         try:
             clip_duration = float(probe_clip.stdout.strip())
         except Exception:
             pass
 
-        # 7. Loop / trim video Pexels con ffmpeg concat
+        # 7. loop / trim video
         video_looped_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         video_looped_path = video_looped_tmp.name
         video_looped_tmp.close()
 
         if clip_duration < real_duration:
             loops = int(real_duration / clip_duration) + 1
-            concat_list_tmp = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".txt")
+            concat_list_tmp = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt")
             for _ in range(loops):
                 concat_list_tmp.write(f"file '{pexels_clip_path}'\n")
             concat_list_tmp.close()
@@ -262,7 +238,7 @@ def generate():
                 "-i", concat_list_tmp.name,
                 "-c", "copy",
                 "-t", str(real_duration),
-                video_looped_path
+                video_looped_path,
             ]
             subprocess.run(concat_cmd, timeout=180, check=True)
             os.unlink(concat_list_tmp.name)
@@ -272,11 +248,11 @@ def generate():
                 "-i", pexels_clip_path,
                 "-t", str(real_duration),
                 "-c", "copy",
-                video_looped_path
+                video_looped_path,
             ]
             subprocess.run(trim_cmd, timeout=180, check=True)
 
-        # 8. Resize a 1920x1080 e aggiungi audio WAV
+        # 8. final merge video+audio
         final_video_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         final_video_path = final_video_tmp.name
         final_video_tmp.close()
@@ -295,7 +271,6 @@ def generate():
             "-shortest",
             final_video_path,
         ]
-
         result = subprocess.run(
             merge_cmd,
             stdout=subprocess.PIPE,
@@ -306,56 +281,75 @@ def generate():
         if result.returncode != 0:
             raise Exception(f"ffmpeg merge fallito: {result.stderr}")
 
-        # 9. Leggi video finale e converti in base64
-        with open(final_video_path, "rb") as f:
-            videobytes = f.read()
-        videob64 = base64.b64encode(videobytes).decode("utf-8")
+        # 9. upload to Google Drive
+        if not DRIVE_FOLDER_ID:
+            raise RuntimeError("DRIVE_FOLDER_ID non configurato")
 
-        # 10. Cleanup
-        for p in [audiopath, pexels_clip_path, video_looped_path, final_video_path]:
-            if p:
-                try:
+        drive_service = get_drive_service()
+        media = MediaFileUpload(final_video_path, mimetype="video/mp4", resumable=False)
+
+        file_metadata = {
+            "name": "wellness_video.mp4",
+            "parents": [DRIVE_FOLDER_ID],
+        }
+
+        created_file = drive_service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields="id, webViewLink, webContentLink",
+        ).execute()
+
+        file_id = created_file.get("id")
+        if not file_id:
+            raise RuntimeError("File creato su Drive ma senza ID")
+
+        # 10. set permission: anyone with link can view
+        permission_body = {
+            "type": "anyone",
+            "role": "reader",
+        }
+        drive_service.permissions().create(
+            fileId=file_id,
+            body=permission_body,
+        ).execute()
+
+        # prefer webViewLink (player Drive) come URL pubblico
+        public_url = created_file.get("webViewLink")
+        if not public_url:
+            # fallback a link di download diretto
+            public_url = f"https://drive.google.com/uc?id={file_id}&export=download"
+
+        # cleanup locali
+        for p in [audiopath, audio_wav_path, pexels_clip_path, video_looped_path, final_video_path]:
+            try:
+                if p and os.path.exists(p):
                     os.unlink(p)
-                except Exception:
-                    pass
+            except Exception:
+                pass
 
         return jsonify({
             "success": True,
             "error": None,
-            "videobase64": videob64,
+            "video_url": public_url,
             "duration": real_duration,
-            "pexels_query": pexels_query,
-            "pexels_video_id": videos[0].get("id")
-        }), 200
-
-    except subprocess.TimeoutExpired as e:
-        for p in [audiopath, audio_wav_path, pexels_clip_path, video_looped_path, final_video_path]:
-            if p:
-                try:
-                    os.unlink(p)
-                except Exception:
-                    pass
-        return jsonify({
-            "success": False,
-            "error": f"Timeout durante elaborazione: {str(e)}",
-            "videobase64": None,
-            "duration": None,
-        }), 500
+        })
 
     except Exception as e:
         for p in [audiopath, audio_wav_path, pexels_clip_path, video_looped_path, final_video_path]:
-            if p:
-                try:
+            try:
+                if p and os.path.exists(p):
                     os.unlink(p)
-                except Exception:
-                    pass
+            except Exception:
+                pass
+
         return jsonify({
             "success": False,
             "error": str(e),
-            "videobase64": None,
+            "video_url": None,
             "duration": None,
         }), 500
 
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
