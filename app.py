@@ -271,7 +271,7 @@ def generate():
             timeout=120,
         )
         if conv_result.returncode != 0:
-            raise Exception(f"ffmpeg audio convert fallito: {conv_result.stderr[:300]}")
+    raise Exception(f"ffmpeg audio convert fallito: {conv_result.stderr}")
         
         # 6.2 Resize video + aggiungi audio AAC
         final_video_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
