@@ -257,24 +257,24 @@ def generate():
             ]
             subprocess.run(trim_cmd, timeout=120, check=True)
         
-        # 6. Resize a 1920x1080 e aggiungi audio con ffmpeg
+                # 6. Resize a 1920x1080 e aggiungi audio con ffmpeg
         final_video_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         final_video_path = final_video_tmp.name
-        
+
         merge_cmd = [
             "ffmpeg", "-y",
-            "-i", video_looped_path,
-            "-i", audiopath,
-            "-vf", "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080",
+            "-i", video_looped_path,   # input video
+            "-i", audiopath,          # input audio MP3
+            "-filter:v", "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080",
             "-c:v", "libx264",
             "-preset", "medium",
             "-crf", "23",
             "-c:a", "aac",
             "-b:a", "192k",
             "-shortest",
-            final_video_path
+            final_video_path,
         ]
-        
+
         result = subprocess.run(
             merge_cmd,
             stdout=subprocess.PIPE,
@@ -282,6 +282,7 @@ def generate():
             text=True,
             timeout=300
         )
+
         
         if result.returncode != 0:
             return jsonify({
