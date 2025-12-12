@@ -5,6 +5,11 @@ import tempfile
 import json
 import requests
 from flask import Flask, request, jsonify
+from moviepy.editor import VideoFileClip, AudioFileClip, concatenate_videoclips
+from moviepy.config import change_settings
+
+# Usa ffmpeg di sistema (Railway)
+change_settings({"FFMPEG_BINARY": "ffmpeg"})
 
 app = Flask(__name__)
 
@@ -61,26 +66,24 @@ def generate():
     """
     audiopath = None
     pexels_clip_path = None
-    video_looped_path = None
-    audio_aac_path = None
     final_video_path = None
-    
+
     try:
         data = request.get_json(force=True) or {}
         audiobase64 = data.get("audiobase64")
         script = data.get("script", "")
         audioduration = data.get("audioduration")
         broll_keywords = data.get("broll_keywords", "").strip()
-        
-        # Fallback: usa prime parole script come topic se keywords mancano
+
+        # Fallback: usa prime parole dello script se mancano le keywords
         if not broll_keywords:
             words = script.split()[:8]
             broll_keywords = " ".join(words) if words else "wellness meditation"
-        
-        # Prendi prima keyword
+
+        # Prima keyword come query principale
         query_keywords = broll_keywords.split(",")
         pexels_query = query_keywords[0].strip() if query_keywords else broll_keywords
-        
+
         if not audiobase64:
             return jsonify({
                 "success": False,
@@ -88,7 +91,7 @@ def generate():
                 "videobase64": None,
                 "duration": None,
             }), 400
-        
+
         # 1. Decodifica base64 in MP3 temporaneo
         try:
             audio_bytes = base64.b64decode(audiobase64)
@@ -99,11 +102,11 @@ def generate():
                 "videobase64": None,
                 "duration": None,
             }), 400
-        
+
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
             f.write(audio_bytes)
             audiopath = f.name
-        
+
         # 2. Durata reale dell'MP3 con ffprobe
         ffprobe_cmd = [
             "ffprobe",
@@ -119,20 +122,21 @@ def generate():
             text=True,
             timeout=10
         )
-        
+
         real_duration = None
         try:
             real_duration = float(probe.stdout.strip())
         except Exception:
             pass
-        
+
+        # Fallback se ffprobe fallisce
         if real_duration is None or real_duration <= 0:
             try:
                 real_duration = float(audioduration)
             except (TypeError, ValueError):
                 real_duration = 60.0
-        
-        # 3. Scarica clip Pexels via API REST
+
+        # 3. Chiamata API Pexels
         api_key = os.environ.get("PEXELS_API_KEY")
         if not api_key:
             return jsonify({
@@ -141,14 +145,14 @@ def generate():
                 "videobase64": None,
                 "duration": None,
             }), 500
-        
+
         headers = {"Authorization": api_key}
         search_params = {
             "query": pexels_query,
             "orientation": "landscape",
             "per_page": 5
         }
-        
+
         search_response = requests.get(
             "https://api.pexels.com/videos/search",
             headers=headers,
@@ -158,7 +162,7 @@ def generate():
         search_response.raise_for_status()
         search_data = search_response.json()
         videos = search_data.get("videos", [])
-        
+
         if not videos:
             return jsonify({
                 "success": False,
@@ -166,7 +170,7 @@ def generate():
                 "videobase64": None,
                 "duration": None,
             }), 500
-        
+
         video_files = videos[0].get("video_files", [])
         if not video_files:
             return jsonify({
@@ -175,14 +179,14 @@ def generate():
                 "videobase64": None,
                 "duration": None,
             }), 500
-        
-        # scegli versione HD se possibile
+
+        # Scegli file HD se disponibile
         hd_files = [vf for vf in video_files if vf.get("width", 0) >= 1920]
         if hd_files:
             best_video = max(hd_files, key=lambda x: x.get("width", 0))
         else:
             best_video = max(video_files, key=lambda x: x.get("width", 0))
-        
+
         video_url = best_video.get("link")
         if not video_url:
             return jsonify({
@@ -191,155 +195,90 @@ def generate():
                 "videobase64": None,
                 "duration": None,
             }), 500
-        
-        # Scarica video Pexels
+
+        # 4. Scarica video Pexels
         r = requests.get(video_url, stream=True, timeout=120)
         r.raise_for_status()
-        
+
         pexels_clip_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-        for chunk in r.iter_content(chunk_size=1024*1024):
+        for chunk in r.iter_content(chunk_size=1024 * 1024):
             if chunk:
                 pexels_clip_tmp.write(chunk)
         pexels_clip_tmp.close()
         pexels_clip_path = pexels_clip_tmp.name
-        
-        # 4. Durata clip Pexels
-        probe_clip = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", pexels_clip_path],
-            stdout=subprocess.PIPE,
-            text=True,
-            timeout=10
-        )
-        
-        clip_duration = 10.0
-        try:
-            clip_duration = float(probe_clip.stdout.strip())
-        except Exception:
-            pass
-        
-        # 5. Loop / trim video Pexels
-        video_looped_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-        video_looped_path = video_looped_tmp.name
-        video_looped_tmp.close()
-        
-        if clip_duration < real_duration:
-            loops = int(real_duration / clip_duration) + 1
-            concat_list_tmp = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".txt")
-            for _ in range(loops):
-                concat_list_tmp.write(f"file '{pexels_clip_path}'\n")
-            concat_list_tmp.close()
-            
-            concat_cmd = [
-                "ffmpeg", "-y",
-                "-f", "concat",
-                "-safe", "0",
-                "-i", concat_list_tmp.name,
-                "-c", "copy",
-                "-t", str(real_duration),
-                video_looped_path
-            ]
-            subprocess.run(concat_cmd, timeout=180, check=True)
-            os.unlink(concat_list_tmp.name)
-        else:
-            trim_cmd = [
-                "ffmpeg", "-y",
-                "-i", pexels_clip_path,
-                "-t", str(real_duration),
-                "-c", "copy",
-                video_looped_path
-            ]
-            subprocess.run(trim_cmd, timeout=180, check=True)
-        
-        # 6.1 Converti audio MP3 in AAC
-        audio_aac_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".m4a")
-        audio_aac_path = audio_aac_tmp.name
-        audio_aac_tmp.close()
-        
-        convert_audio_cmd = [
-            "ffmpeg", "-y",
-            "-i", audiopath,
-            "-c:a", "aac",
-            "-b:a", "192k",
-            audio_aac_path,
-        ]
-        conv_result = subprocess.run(
-            convert_audio_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=120,
-        )
-        if conv_result.returncode != 0:
-    raise Exception(f"ffmpeg audio convert fallito: {conv_result.stderr}")
-        
-        # 6.2 Resize video + aggiungi audio AAC
+
+        # 5. Elabora video con MoviePy
+        video_clip = VideoFileClip(pexels_clip_path)
+
+        # Resize mantenendo aspect ratio, poi crop centrale a 1920x1080
+        video_clip = video_clip.resize(height=1080)
+        if video_clip.w < 1920:
+            video_clip = video_clip.resize(width=1920)
+
+        if video_clip.w > 1920 or video_clip.h > 1080:
+            video_clip = video_clip.crop(
+                x_center=video_clip.w / 2,
+                y_center=video_clip.h / 2,
+                width=1920,
+                height=1080
+            )
+
+        # Loop se la clip è più corta dell'audio
+        if video_clip.duration < real_duration:
+            loops_needed = int(real_duration / video_clip.duration) + 1
+            video_clip = concatenate_videoclips([video_clip] * loops_needed)
+
+        # Taglia alla durata esatta dell'audio
+        video_clip = video_clip.subclip(0, min(video_clip.duration, real_duration))
+
+        # 6. Aggiungi audio TTS
+        audio_clip = AudioFileClip(audiopath)
+        final_clip = video_clip.set_audio(audio_clip)
+
+        # 7. Esporta video finale
         final_video_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         final_video_path = final_video_tmp.name
-        final_video_tmp.close()
-        
-        merge_cmd = [
-            "ffmpeg", "-y",
-            "-i", video_looped_path,   # video
-            "-i", audio_aac_path,      # audio AAC
-            "-filter:v",
-            "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080",
-            "-c:v", "libx264",
-            "-preset", "medium",
-            "-crf", "23",
-            "-c:a", "copy",            # copia AAC
-            "-shortest",
+
+        final_clip.write_videofile(
             final_video_path,
-        ]
-        
-        result = subprocess.run(
-            merge_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=300,
+            fps=25,
+            codec="libx264",
+            audio_codec="aac",
+            audio_bitrate="192k",
+            preset="medium",
+            verbose=False,
+            logger=None,
         )
-        if result.returncode != 0:
-            raise Exception(f"ffmpeg merge fallito: {result.stderr[:300]}")
-        
-        # 7. Leggi video finale e converti in base64
+
+        # Cleanup MoviePy
+        final_clip.close()
+        audio_clip.close()
+        video_clip.close()
+
+        # 8. Leggi video e converti in base64
         with open(final_video_path, "rb") as f:
             videobytes = f.read()
         videob64 = base64.b64encode(videobytes).decode("utf-8")
-        
-        # 8. Cleanup
-        for p in [audiopath, pexels_clip_path, video_looped_path, audio_aac_path, final_video_path]:
+
+        # 9. Cleanup file temporanei
+        for p in [audiopath, pexels_clip_path, final_video_path]:
             if p:
                 try:
                     os.unlink(p)
                 except Exception:
                     pass
-        
+
         return jsonify({
             "success": True,
             "error": None,
             "videobase64": videob64,
             "duration": real_duration,
             "pexels_query": pexels_query,
-            "pexels_video_id": videos[0].get("id"),
+            "pexels_video_id": videos[0].get("id")
         }), 200
-    
-    except subprocess.TimeoutExpired as e:
-        for p in [audiopath, pexels_clip_path, video_looped_path, audio_aac_path, final_video_path]:
-            if p:
-                try:
-                    os.unlink(p)
-                except Exception:
-                    pass
-        return jsonify({
-            "success": False,
-            "error": f"Timeout durante elaborazione: {str(e)}",
-            "videobase64": None,
-            "duration": None,
-        }), 500
-    
+
     except Exception as e:
-        for p in [audiopath, pexels_clip_path, video_looped_path, audio_aac_path, final_video_path]:
+        for p in [audiopath, pexels_clip_path, final_video_path]:
             if p:
                 try:
                     os.unlink(p)
