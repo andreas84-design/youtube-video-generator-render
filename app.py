@@ -3,29 +3,54 @@ import base64
 import json
 import tempfile
 import subprocess
+import uuid
+import datetime as dt
 
 import requests
 from flask import Flask, request, jsonify
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+import boto3
+from botocore.config import Config
 
 app = Flask(__name__)
 
-# Config Google Drive
-DRIVE_FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID")
-GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+# Config R2 (S3 compatibile)
+R2_ACCESS_KEY_ID = os.environ.get("R2_ACCESS_KEY_ID")
+R2_SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY")
+R2_BUCKET_NAME = os.environ.get("R2_BUCKET_NAME")
+R2_PUBLIC_BASE_URL = os.environ.get("R2_PUBLIC_BASE_URL")  # es: https://pub-....r2.dev
+R2_REGION = os.environ.get("R2_REGION", "auto")
+R2_ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID")  # opzionale, se vuoi usare endpoint account-scoped
 
 
-def get_drive_service():
-    if not GOOGLE_SERVICE_ACCOUNT_JSON:
-        raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON non configurata")
-    info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
-    creds = service_account.Credentials.from_service_account_info(
-        info,
-        scopes=["https://www.googleapis.com/auth/drive.file"],
+def get_s3_client():
+    """
+    Client S3 configurato per Cloudflare R2.
+    Usa l'endpoint account-scoped se R2_ACCOUNT_ID è presente,
+    altrimenti l'endpoint pubblico base.
+    """
+    if R2_ACCOUNT_ID:
+        endpoint_url = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+    else:
+        # fallback: prova a ricavare l'account ID dall'URL pubblico se è del tipo pub-xxx.r2.dev
+        endpoint_url = None
+        if ".r2.dev" in (R2_PUBLIC_BASE_URL or ""):
+            # per R2 S3 API serve comunque l'endpoint account-scoped,
+            # quindi è meglio impostare R2_ACCOUNT_ID in Railway se puoi.
+            pass
+
+    if endpoint_url is None:
+        raise RuntimeError("Endpoint R2 non configurato: imposta R2_ACCOUNT_ID in Railway")
+
+    session = boto3.session.Session()
+    s3_client = session.client(
+        service_name="s3",
+        region_name=R2_REGION,  # per R2 deve essere 'auto' o vuoto [web:90][web:95]
+        endpoint_url=endpoint_url,  # https://<ACCOUNT_ID>.r2.cloudflarestorage.com [web:90][web:91]
+        aws_access_key_id=R2_ACCESS_KEY_ID,
+        aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+        config=Config(s3={"addressing_style": "virtual"}),
     )
-    return build("drive", "v3", credentials=creds)
+    return s3_client
 
 
 @app.route("/ffmpeg-test", methods=["GET"])
@@ -49,6 +74,15 @@ def generate():
     final_video_path = None
 
     try:
+        # Controllo config R2
+        if not all([R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME, R2_PUBLIC_BASE_URL]):
+            return jsonify({
+                "success": False,
+                "error": "Config R2 mancante (chiavi, bucket o URL pubblico).",
+                "video_url": None,
+                "duration": None,
+            }), 500
+
         data = request.get_json(force=True) or {}
         audiobase64 = data.get("audiobase64")
         script = data.get("script", "")
@@ -85,7 +119,7 @@ def generate():
             f.write(audio_bytes)
             audiopath = f.name
 
-        # 2. convert audio to WAV 48kHz (universal)
+        # 2. convert audio to WAV 48kHz
         audio_wav_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
         audio_wav_path = audio_wav_tmp.name
         audio_wav_tmp.close()
@@ -281,43 +315,23 @@ def generate():
         if result.returncode != 0:
             raise Exception(f"ffmpeg merge fallito: {result.stderr}")
 
-        # 9. upload to Google Drive
-        if not DRIVE_FOLDER_ID:
-            raise RuntimeError("DRIVE_FOLDER_ID non configurato")
+        # 9. upload su R2
+        s3_client = get_s3_client()
 
-        drive_service = get_drive_service()
-        media = MediaFileUpload(final_video_path, mimetype="video/mp4", resumable=False)
+        # object key unico: es. videos/2025-12-12/UUID.mp4
+        today = dt.datetime.utcnow().strftime("%Y-%m-%d")
+        object_key = f"videos/{today}/{uuid.uuid4().hex}.mp4"
 
-        file_metadata = {
-            "name": "wellness_video.mp4",
-            "parents": [DRIVE_FOLDER_ID],
-        }
+        s3_client.upload_file(
+            Filename=final_video_path,
+            Bucket=R2_BUCKET_NAME,
+            Key=object_key,
+            ExtraArgs={"ContentType": "video/mp4"},
+        )  # [web:73][web:79][web:91]
 
-        created_file = drive_service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields="id, webViewLink, webContentLink",
-        ).execute()
-
-        file_id = created_file.get("id")
-        if not file_id:
-            raise RuntimeError("File creato su Drive ma senza ID")
-
-        # 10. set permission: anyone with link can view
-        permission_body = {
-            "type": "anyone",
-            "role": "reader",
-        }
-        drive_service.permissions().create(
-            fileId=file_id,
-            body=permission_body,
-        ).execute()
-
-        # prefer webViewLink (player Drive) come URL pubblico
-        public_url = created_file.get("webViewLink")
-        if not public_url:
-            # fallback a link di download diretto
-            public_url = f"https://drive.google.com/uc?id={file_id}&export=download"
+        # URL pubblico finale: base + / + object_key
+        # es: https://pub-xxx.r2.dev/videos/2025-12-12/uuid.mp4
+        public_url = f"{R2_PUBLIC_BASE_URL.rstrip('/')}/{object_key}"
 
         # cleanup locali
         for p in [audiopath, audio_wav_path, pexels_clip_path, video_looped_path, final_video_path]:
