@@ -277,7 +277,7 @@ def generate():
             timeout=300,
         )
         if result.returncode != 0:
-            raise Exception(f"ffmpeg merge fallito: {result.stderr[:400]}")
+            raise Exception(f"ffmpeg merge fallito: {result.stderr}")
 
         # 8. Leggi video finale e converti in base64
         with open(final_video_path, "rb") as f:
