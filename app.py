@@ -53,13 +53,14 @@ def generate():
     """
     Body JSON atteso da n8n:
     {
-        "audiobase64": "...",      # audio MP3 in base64 (Google TTS)
+        "audiobase64": "...",      # audio in base64 (Google TTS)
         "script": "...",           # testo script completo
         "audioduration": 180.0,    # durata stimata (fallback)
         "broll_keywords": "woman walking, healthy breakfast"  # keywords per Pexels
     }
     """
     audiopath = None
+    audio_wav_path = None
     pexels_clip_path = None
     video_looped_path = None
     final_video_path = None
@@ -87,7 +88,7 @@ def generate():
         query_keywords = broll_keywords.split(",")
         pexels_query = query_keywords[0].strip() if query_keywords else broll_keywords
 
-        # 1. Decodifica base64 in MP3 temporaneo
+        # 1. Decodifica base64 in file temporaneo
         try:
             audio_bytes = base64.b64decode(audiobase64)
         except Exception as e:
@@ -102,7 +103,33 @@ def generate():
             f.write(audio_bytes)
             audiopath = f.name
 
-        # 2. Durata reale dell'MP3 con ffprobe
+        # 2. Converti audio in WAV per compatibilità universale
+        audio_wav_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+        audio_wav_path = audio_wav_tmp.name
+        audio_wav_tmp.close()
+
+        convert_audio_cmd = [
+            "ffmpeg", "-y",
+            "-i", audiopath,
+            "-acodec", "pcm_s16le",
+            "-ar", "48000",
+            audio_wav_path,
+        ]
+        conv_result = subprocess.run(
+            convert_audio_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=60,
+        )
+        if conv_result.returncode != 0:
+            raise Exception(f"Conversione audio fallita: {conv_result.stderr}")
+
+        # Elimina il file .bin originale e usa il WAV
+        os.unlink(audiopath)
+        audiopath = audio_wav_path
+
+        # 3. Durata reale dell'audio con ffprobe
         ffprobe_cmd = [
             "ffprobe",
             "-v", "error",
@@ -130,7 +157,7 @@ def generate():
             except (TypeError, ValueError):
                 real_duration = 60.0
 
-        # 3. Scarica clip Pexels (REST API)
+        # 4. Scarica clip Pexels (REST API)
         api_key = os.environ.get("PEXELS_API_KEY")
         if not api_key:
             return jsonify({
@@ -174,7 +201,7 @@ def generate():
                 "duration": None,
             }), 500
 
-        # scegli versione HD se possibile
+        # Scegli versione HD se possibile
         hd_files = [vf for vf in video_files if vf.get("width", 0) >= 1920]
         if hd_files:
             best_video = max(hd_files, key=lambda x: x.get("width", 0))
@@ -190,7 +217,7 @@ def generate():
                 "duration": None,
             }), 500
 
-        # 4. Scarica video Pexels
+        # 5. Scarica video Pexels
         r = requests.get(video_url, stream=True, timeout=120)
         r.raise_for_status()
 
@@ -201,7 +228,7 @@ def generate():
         pexels_clip_tmp.close()
         pexels_clip_path = pexels_clip_tmp.name
 
-        # 5. Durata clip Pexels
+        # 6. Durata clip Pexels
         probe_clip = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", pexels_clip_path],
@@ -216,7 +243,7 @@ def generate():
         except Exception:
             pass
 
-        # 6. Loop / trim video Pexels con ffmpeg concat
+        # 7. Loop / trim video Pexels con ffmpeg concat
         video_looped_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         video_looped_path = video_looped_tmp.name
         video_looped_tmp.close()
@@ -249,20 +276,20 @@ def generate():
             ]
             subprocess.run(trim_cmd, timeout=180, check=True)
 
-        # 7. Resize a 1920x1080 e aggiungi audio TTS
+        # 8. Resize a 1920x1080 e aggiungi audio WAV
         final_video_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         final_video_path = final_video_tmp.name
         final_video_tmp.close()
 
         merge_cmd = [
             "ffmpeg", "-y",
-            "-i", video_looped_path,   # video
-            "-i", audiopath,          # audio MP3
+            "-i", video_looped_path,
+            "-i", audiopath,
             "-filter:v",
             "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080",
             "-c:v", "libx264",
             "-preset", "medium",
-            "-crf", "20",              # qualità alta, peso ok per YouTube
+            "-crf", "20",
             "-c:a", "aac",
             "-b:a", "192k",
             "-shortest",
@@ -279,12 +306,12 @@ def generate():
         if result.returncode != 0:
             raise Exception(f"ffmpeg merge fallito: {result.stderr}")
 
-        # 8. Leggi video finale e converti in base64
+        # 9. Leggi video finale e converti in base64
         with open(final_video_path, "rb") as f:
             videobytes = f.read()
         videob64 = base64.b64encode(videobytes).decode("utf-8")
 
-        # 9. Cleanup
+        # 10. Cleanup
         for p in [audiopath, pexels_clip_path, video_looped_path, final_video_path]:
             if p:
                 try:
@@ -302,7 +329,7 @@ def generate():
         }), 200
 
     except subprocess.TimeoutExpired as e:
-        for p in [audiopath, pexels_clip_path, video_looped_path, final_video_path]:
+        for p in [audiopath, audio_wav_path, pexels_clip_path, video_looped_path, final_video_path]:
             if p:
                 try:
                     os.unlink(p)
@@ -316,7 +343,7 @@ def generate():
         }), 500
 
     except Exception as e:
-        for p in [audiopath, pexels_clip_path, video_looped_path, final_video_path]:
+        for p in [audiopath, audio_wav_path, pexels_clip_path, video_looped_path, final_video_path]:
             if p:
                 try:
                     os.unlink(p)
