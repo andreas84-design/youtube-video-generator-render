@@ -7,7 +7,7 @@ import requests
 from flask import Flask, request, jsonify
 from moviepy.editor import VideoFileClip, AudioFileClip, concatenate_videoclips
 from moviepy.config import change_settings
-from pyPexels import PyPexels
+from pypexels import PyPexels
 
 change_settings({"FFMPEG_BINARY": "ffmpeg"})
 app = Flask(__name__)
