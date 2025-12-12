@@ -62,6 +62,7 @@ def generate():
     audiopath = None
     pexels_clip_path = None
     video_looped_path = None
+    audio_aac_path = None
     final_video_path = None
     
     try:
@@ -103,7 +104,7 @@ def generate():
             f.write(audio_bytes)
             audiopath = f.name
         
-        # 2. Leggi la durata reale dell'MP3 con ffprobe
+        # 2. Durata reale dell'MP3 con ffprobe
         ffprobe_cmd = [
             "ffprobe",
             "-v", "error",
@@ -125,14 +126,13 @@ def generate():
         except Exception:
             pass
         
-        # Fallback se ffprobe fallisce
         if real_duration is None or real_duration <= 0:
             try:
                 real_duration = float(audioduration)
             except (TypeError, ValueError):
                 real_duration = 60.0
         
-        # 3. Scarica clip Pexels usando API REST
+        # 3. Scarica clip Pexels via API REST
         api_key = os.environ.get("PEXELS_API_KEY")
         if not api_key:
             return jsonify({
@@ -167,7 +167,6 @@ def generate():
                 "duration": None,
             }), 500
         
-        # Prendi il primo video e trova la versione HD
         video_files = videos[0].get("video_files", [])
         if not video_files:
             return jsonify({
@@ -177,7 +176,7 @@ def generate():
                 "duration": None,
             }), 500
         
-        # Scegli la versione con risoluzione >= 1920px (HD/FullHD)
+        # scegli versione HD se possibile
         hd_files = [vf for vf in video_files if vf.get("width", 0) >= 1920]
         if hd_files:
             best_video = max(hd_files, key=lambda x: x.get("width", 0))
@@ -193,7 +192,7 @@ def generate():
                 "duration": None,
             }), 500
         
-        # Scarica il video Pexels
+        # Scarica video Pexels
         r = requests.get(video_url, stream=True, timeout=120)
         r.raise_for_status()
         
@@ -204,7 +203,7 @@ def generate():
         pexels_clip_tmp.close()
         pexels_clip_path = pexels_clip_tmp.name
         
-        # 4. Ottieni durata clip Pexels con ffprobe
+        # 4. Durata clip Pexels
         probe_clip = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", pexels_clip_path],
@@ -213,27 +212,24 @@ def generate():
             timeout=10
         )
         
-        clip_duration = 10.0  # fallback
+        clip_duration = 10.0
         try:
             clip_duration = float(probe_clip.stdout.strip())
         except Exception:
             pass
         
-        # 5. Loop video Pexels con ffmpeg se più corto dell'audio
+        # 5. Loop / trim video Pexels
         video_looped_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         video_looped_path = video_looped_tmp.name
+        video_looped_tmp.close()
         
         if clip_duration < real_duration:
-            # Calcola quanti loop servono
             loops = int(real_duration / clip_duration) + 1
-            
-            # Crea file concat list per ffmpeg
             concat_list_tmp = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".txt")
             for _ in range(loops):
                 concat_list_tmp.write(f"file '{pexels_clip_path}'\n")
             concat_list_tmp.close()
             
-            # Concatena con ffmpeg
             concat_cmd = [
                 "ffmpeg", "-y",
                 "-f", "concat",
@@ -243,11 +239,9 @@ def generate():
                 "-t", str(real_duration),
                 video_looped_path
             ]
-            
-            subprocess.run(concat_cmd, timeout=120, check=True)
+            subprocess.run(concat_cmd, timeout=180, check=True)
             os.unlink(concat_list_tmp.name)
         else:
-            # Clip già abbastanza lunga, taglia alla durata esatta
             trim_cmd = [
                 "ffmpeg", "-y",
                 "-i", pexels_clip_path,
@@ -255,50 +249,66 @@ def generate():
                 "-c", "copy",
                 video_looped_path
             ]
-            subprocess.run(trim_cmd, timeout=120, check=True)
+            subprocess.run(trim_cmd, timeout=180, check=True)
         
-                # 6. Resize a 1920x1080 e aggiungi audio con ffmpeg
+        # 6.1 Converti audio MP3 in AAC
+        audio_aac_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".m4a")
+        audio_aac_path = audio_aac_tmp.name
+        audio_aac_tmp.close()
+        
+        convert_audio_cmd = [
+            "ffmpeg", "-y",
+            "-i", audiopath,
+            "-c:a", "aac",
+            "-b:a", "192k",
+            audio_aac_path,
+        ]
+        conv_result = subprocess.run(
+            convert_audio_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=120,
+        )
+        if conv_result.returncode != 0:
+            raise Exception(f"ffmpeg audio convert fallito: {conv_result.stderr[:300]}")
+        
+        # 6.2 Resize video + aggiungi audio AAC
         final_video_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         final_video_path = final_video_tmp.name
-
+        final_video_tmp.close()
+        
         merge_cmd = [
             "ffmpeg", "-y",
-            "-i", video_looped_path,   # input video
-            "-i", audiopath,          # input audio MP3
-            "-filter:v", "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080",
+            "-i", video_looped_path,   # video
+            "-i", audio_aac_path,      # audio AAC
+            "-filter:v",
+            "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080",
             "-c:v", "libx264",
             "-preset", "medium",
             "-crf", "23",
-            "-c:a", "aac",
-            "-b:a", "192k",
+            "-c:a", "copy",            # copia AAC
             "-shortest",
             final_video_path,
         ]
-
+        
         result = subprocess.run(
             merge_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=300
+            timeout=300,
         )
-
-        
         if result.returncode != 0:
-            return jsonify({
-                "success": False,
-                "error": f"ffmpeg merge fallito: {result.stderr[:500]}",
-                "videobase64": None,
-                "duration": None,
-            }), 400
+            raise Exception(f"ffmpeg merge fallito: {result.stderr[:300]}")
         
         # 7. Leggi video finale e converti in base64
         with open(final_video_path, "rb") as f:
             videobytes = f.read()
         videob64 = base64.b64encode(videobytes).decode("utf-8")
         
-        # 8. Cleanup files temporanei
-        for p in [audiopath, pexels_clip_path, video_looped_path, final_video_path]:
+        # 8. Cleanup
+        for p in [audiopath, pexels_clip_path, video_looped_path, audio_aac_path, final_video_path]:
             if p:
                 try:
                     os.unlink(p)
@@ -311,11 +321,11 @@ def generate():
             "videobase64": videob64,
             "duration": real_duration,
             "pexels_query": pexels_query,
-            "pexels_video_id": videos[0].get("id")
+            "pexels_video_id": videos[0].get("id"),
         }), 200
     
     except subprocess.TimeoutExpired as e:
-        for p in [audiopath, pexels_clip_path, video_looped_path, final_video_path]:
+        for p in [audiopath, pexels_clip_path, video_looped_path, audio_aac_path, final_video_path]:
             if p:
                 try:
                     os.unlink(p)
@@ -329,7 +339,7 @@ def generate():
         }), 500
     
     except Exception as e:
-        for p in [audiopath, pexels_clip_path, video_looped_path, final_video_path]:
+        for p in [audiopath, pexels_clip_path, video_looped_path, audio_aac_path, final_video_path]:
             if p:
                 try:
                     os.unlink(p)
