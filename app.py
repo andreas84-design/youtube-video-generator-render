@@ -262,10 +262,31 @@ def generate():
                 "duration": None,
             }), 500
 
-        # 5. concatena tutte le scene in un unico mp4
+                # 5. Normalizza e concatena tutte le scene
+        # Prima normalizziamo ogni clip (stessa risoluzione, framerate, codec)
+        normalized_clips = []
+        for i, (clip_path, _dur) in enumerate(scene_paths):
+            normalized_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+            normalized_path = normalized_tmp.name
+            normalized_tmp.close()
+
+            normalize_cmd = [
+                "ffmpeg", "-y",
+                "-i", clip_path,
+                "-vf", "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,fps=30",
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-crf", "23",
+                "-an",  # togliamo audio dalle scene
+                normalized_path,
+            ]
+            subprocess.run(normalize_cmd, timeout=120, check=True)
+            normalized_clips.append(normalized_path)
+
+        # Ora concateniamo i clip normalizzati
         concat_list_tmp = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt")
-        for clip_path, _dur in scene_paths:
-            concat_list_tmp.write(f"file '{clip_path}'\n")
+        for norm_path in normalized_clips:
+            concat_list_tmp.write(f"file '{norm_path}'\n")
         concat_list_tmp.close()
 
         video_looped_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
@@ -283,6 +304,14 @@ def generate():
         ]
         subprocess.run(concat_cmd, timeout=300, check=True)
         os.unlink(concat_list_tmp.name)
+
+        # Cleanup clip normalizzati
+        for norm_path in normalized_clips:
+            try:
+                if os.path.exists(norm_path):
+                    os.unlink(norm_path)
+            except Exception:
+                pass
 
         # 6. final merge video+audio
         final_video_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
