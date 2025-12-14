@@ -82,8 +82,11 @@ def generate():
         audiobase64 = data.get("audiobase64")
         script = data.get("script", "")
         audioduration = data.get("audioduration")
+
+        # Dati per Pexels
         broll_keywords = data.get("broll_keywords", "").strip()
         topic = data.get("topic", "").strip()
+        sheet_keywords = data.get("keywords", "").strip()
 
         if not audiobase64:
             return jsonify({
@@ -93,15 +96,22 @@ def generate():
                 "duration": None,
             }), 400
 
-        # Fallback broll_keywords
+        # Fallback broll_keywords se mancano
         if not broll_keywords:
             words = script.split()[:8]
             broll_keywords = " ".join(words) if words else "wellness meditation"
 
-        # Costruisci query Pexels combinando topic + keywords
-        base_query = topic if topic else broll_keywords
-        query_keywords = base_query.split(",")
-        pexels_query = query_keywords[0].strip() if query_keywords else base_query
+        # Costruisci query Pexels combinando topic + broll_keywords + keywords del foglio
+        parts = []
+        if topic:
+            parts.append(topic)
+        if broll_keywords:
+            parts.append(broll_keywords)
+        if sheet_keywords:
+            parts.append(sheet_keywords)
+
+        base_query = " ".join(parts) if parts else "women menopause hot flashes night sleep"
+        pexels_query = base_query[:100]
 
         # 1. decode audio base64 -> temp .bin
         try:
@@ -262,8 +272,7 @@ def generate():
                 "duration": None,
             }), 500
 
-                # 5. Normalizza e concatena tutte le scene
-        # Prima normalizziamo ogni clip (stessa risoluzione, framerate, codec)
+        # 5. Normalizza e concatena tutte le scene
         normalized_clips = []
         for i, (clip_path, _dur) in enumerate(scene_paths):
             normalized_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
@@ -277,13 +286,12 @@ def generate():
                 "-c:v", "libx264",
                 "-preset", "fast",
                 "-crf", "23",
-                "-an",  # togliamo audio dalle scene
+                "-an",
                 normalized_path,
             ]
             subprocess.run(normalize_cmd, timeout=120, check=True)
             normalized_clips.append(normalized_path)
 
-        # Ora concateniamo i clip normalizzati
         concat_list_tmp = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt")
         for norm_path in normalized_clips:
             concat_list_tmp.write(f"file '{norm_path}'\n")
@@ -393,7 +401,6 @@ def generate():
         })
 
     except Exception as e:
-        # cleanup su errore
         try:
             if audiopath and os.path.exists(audiopath):
                 os.unlink(audiopath)
