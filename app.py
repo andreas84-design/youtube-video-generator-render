@@ -26,17 +26,12 @@ def get_s3_client():
     """
     Client S3 configurato per Cloudflare R2.
     Usa l'endpoint account-scoped se R2_ACCOUNT_ID è presente,
-    altrimenti l'endpoint pubblico base.
+    altrimenti solleva errore (meglio impostare sempre R2_ACCOUNT_ID).
     """
     if R2_ACCOUNT_ID:
         endpoint_url = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
     else:
-        # fallback: prova a ricavare l'account ID dall'URL pubblico se è del tipo pub-xxx.r2.dev
         endpoint_url = None
-        if ".r2.dev" in (R2_PUBLIC_BASE_URL or ""):
-            # per R2 S3 API serve comunque l'endpoint account-scoped,
-            # quindi è meglio impostare R2_ACCOUNT_ID in Railway se puoi.
-            pass
 
     if endpoint_url is None:
         raise RuntimeError("Endpoint R2 non configurato: imposta R2_ACCOUNT_ID in Railway")
@@ -44,8 +39,8 @@ def get_s3_client():
     session = boto3.session.Session()
     s3_client = session.client(
         service_name="s3",
-        region_name=R2_REGION,  # per R2 deve essere 'auto' o vuoto [web:90][web:95]
-        endpoint_url=endpoint_url,  # https://<ACCOUNT_ID>.r2.cloudflarestorage.com [web:90][web:91]
+        region_name=R2_REGION,
+        endpoint_url=endpoint_url,
         aws_access_key_id=R2_ACCESS_KEY_ID,
         aws_secret_access_key=R2_SECRET_ACCESS_KEY,
         config=Config(s3={"addressing_style": "virtual"}),
@@ -69,9 +64,9 @@ def ffmpeg_test():
 def generate():
     audiopath = None
     audio_wav_path = None
-    pexels_clip_path = None
     video_looped_path = None
     final_video_path = None
+    scene_paths = []
 
     try:
         # Controllo config R2
@@ -88,6 +83,7 @@ def generate():
         script = data.get("script", "")
         audioduration = data.get("audioduration")
         broll_keywords = data.get("broll_keywords", "").strip()
+        topic = data.get("topic", "").strip()
 
         if not audiobase64:
             return jsonify({
@@ -97,12 +93,15 @@ def generate():
                 "duration": None,
             }), 400
 
+        # Fallback broll_keywords
         if not broll_keywords:
             words = script.split()[:8]
             broll_keywords = " ".join(words) if words else "wellness meditation"
 
-        query_keywords = broll_keywords.split(",")
-        pexels_query = query_keywords[0].strip() if query_keywords else broll_keywords
+        # Costruisci query Pexels combinando topic + keywords
+        base_query = topic if topic else broll_keywords
+        query_keywords = base_query.split(",")
+        pexels_query = query_keywords[0].strip() if query_keywords else base_query
 
         # 1. decode audio base64 -> temp .bin
         try:
@@ -171,7 +170,7 @@ def generate():
             except (TypeError, ValueError):
                 real_duration = 60.0
 
-        # 4. Pexels search
+        # 4. Pexels search MULTI-SCENE
         api_key = os.environ.get("PEXELS_API_KEY")
         if not api_key:
             return jsonify({
@@ -185,7 +184,7 @@ def generate():
         search_params = {
             "query": pexels_query,
             "orientation": "landscape",
-            "per_page": 5,
+            "per_page": 30,  # fino a ~30 clip
         }
         search_response = requests.get(
             "https://api.pexels.com/videos/search",
@@ -205,88 +204,87 @@ def generate():
                 "duration": None,
             }), 500
 
-        video_files = videos[0].get("video_files", [])
-        if not video_files:
+        max_scenes = 24
+        total_scene_duration = 0.0
+
+        for v in videos:
+            if len(scene_paths) >= max_scenes:
+                break
+
+            video_files = v.get("video_files", [])
+            if not video_files:
+                continue
+
+            hd_files = [vf for vf in video_files if vf.get("width", 0) >= 1920]
+            if hd_files:
+                best_video = max(hd_files, key=lambda x: x.get("width", 0))
+            else:
+                best_video = max(video_files, key=lambda x: x.get("width", 0))
+
+            clip_url = best_video.get("link")
+            if not clip_url:
+                continue
+
+            # Scarica clip singola
+            r = requests.get(clip_url, stream=True, timeout=120)
+            r.raise_for_status()
+            tmp_clip = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+            for chunk in r.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    tmp_clip.write(chunk)
+            tmp_clip.close()
+            clip_path = tmp_clip.name
+
+            # Durata clip
+            probe_clip = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", clip_path],
+                stdout=subprocess.PIPE,
+                text=True,
+                timeout=10,
+            )
+            try:
+                clip_duration = float(probe_clip.stdout.strip())
+            except Exception:
+                clip_duration = 5.0
+
+            scene_paths.append((clip_path, clip_duration))
+            total_scene_duration += clip_duration
+
+            if total_scene_duration >= real_duration * 1.2:
+                break
+
+        if not scene_paths:
             return jsonify({
                 "success": False,
-                "error": "Nessun file video disponibile nel risultato Pexels",
+                "error": "Nessuna clip valida ottenuta da Pexels",
                 "video_url": None,
                 "duration": None,
             }), 500
 
-        hd_files = [vf for vf in video_files if vf.get("width", 0) >= 1920]
-        if hd_files:
-            best_video = max(hd_files, key=lambda x: x.get("width", 0))
-        else:
-            best_video = max(video_files, key=lambda x: x.get("width", 0))
+        # 5. concatena tutte le scene in un unico mp4
+        concat_list_tmp = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt")
+        for clip_path, _dur in scene_paths:
+            concat_list_tmp.write(f"file '{clip_path}'\n")
+        concat_list_tmp.close()
 
-        video_url = best_video.get("link")
-        if not video_url:
-            return jsonify({
-                "success": False,
-                "error": "URL video Pexels non disponibile",
-                "video_url": None,
-                "duration": None,
-            }), 500
-
-        # 5. download pexels video
-        r = requests.get(video_url, stream=True, timeout=120)
-        r.raise_for_status()
-        pexels_clip_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-        for chunk in r.iter_content(chunk_size=1024 * 1024):
-            if chunk:
-                pexels_clip_tmp.write(chunk)
-        pexels_clip_tmp.close()
-        pexels_clip_path = pexels_clip_tmp.name
-
-        # 6. get clip duration
-        probe_clip = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", pexels_clip_path],
-            stdout=subprocess.PIPE,
-            text=True,
-            timeout=10,
-        )
-        clip_duration = 10.0
-        try:
-            clip_duration = float(probe_clip.stdout.strip())
-        except Exception:
-            pass
-
-        # 7. loop / trim video
         video_looped_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         video_looped_path = video_looped_tmp.name
         video_looped_tmp.close()
 
-        if clip_duration < real_duration:
-            loops = int(real_duration / clip_duration) + 1
-            concat_list_tmp = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt")
-            for _ in range(loops):
-                concat_list_tmp.write(f"file '{pexels_clip_path}'\n")
-            concat_list_tmp.close()
+        concat_cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", concat_list_tmp.name,
+            "-c", "copy",
+            "-t", str(real_duration),
+            video_looped_path,
+        ]
+        subprocess.run(concat_cmd, timeout=300, check=True)
+        os.unlink(concat_list_tmp.name)
 
-            concat_cmd = [
-                "ffmpeg", "-y",
-                "-f", "concat",
-                "-safe", "0",
-                "-i", concat_list_tmp.name,
-                "-c", "copy",
-                "-t", str(real_duration),
-                video_looped_path,
-            ]
-            subprocess.run(concat_cmd, timeout=180, check=True)
-            os.unlink(concat_list_tmp.name)
-        else:
-            trim_cmd = [
-                "ffmpeg", "-y",
-                "-i", pexels_clip_path,
-                "-t", str(real_duration),
-                "-c", "copy",
-                video_looped_path,
-            ]
-            subprocess.run(trim_cmd, timeout=180, check=True)
-
-        # 8. final merge video+audio
+        # 6. final merge video+audio
         final_video_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         final_video_path = final_video_tmp.name
         final_video_tmp.close()
@@ -315,10 +313,9 @@ def generate():
         if result.returncode != 0:
             raise Exception(f"ffmpeg merge fallito: {result.stderr}")
 
-        # 9. upload su R2
+        # 7. upload su R2
         s3_client = get_s3_client()
 
-        # object key unico: es. videos/2025-12-12/UUID.mp4
         today = dt.datetime.utcnow().strftime("%Y-%m-%d")
         object_key = f"videos/{today}/{uuid.uuid4().hex}.mp4"
 
@@ -327,17 +324,35 @@ def generate():
             Bucket=R2_BUCKET_NAME,
             Key=object_key,
             ExtraArgs={"ContentType": "video/mp4"},
-        )  # [web:73][web:79][web:91]
+        )
 
-        # URL pubblico finale: base + / + object_key
-        # es: https://pub-xxx.r2.dev/videos/2025-12-12/uuid.mp4
         public_url = f"{R2_PUBLIC_BASE_URL.rstrip('/')}/{object_key}"
 
         # cleanup locali
-        for p in [audiopath, audio_wav_path, pexels_clip_path, video_looped_path, final_video_path]:
+        try:
+            if audiopath and os.path.exists(audiopath):
+                os.unlink(audiopath)
+        except Exception:
+            pass
+        try:
+            if audio_wav_path and os.path.exists(audio_wav_path):
+                os.unlink(audio_wav_path)
+        except Exception:
+            pass
+        try:
+            if video_looped_path and os.path.exists(video_looped_path):
+                os.unlink(video_looped_path)
+        except Exception:
+            pass
+        try:
+            if final_video_path and os.path.exists(final_video_path):
+                os.unlink(final_video_path)
+        except Exception:
+            pass
+        for clip_path, _dur in scene_paths:
             try:
-                if p and os.path.exists(p):
-                    os.unlink(p)
+                if clip_path and os.path.exists(clip_path):
+                    os.unlink(clip_path)
             except Exception:
                 pass
 
@@ -349,10 +364,31 @@ def generate():
         })
 
     except Exception as e:
-        for p in [audiopath, audio_wav_path, pexels_clip_path, video_looped_path, final_video_path]:
+        # cleanup su errore
+        try:
+            if audiopath and os.path.exists(audiopath):
+                os.unlink(audiopath)
+        except Exception:
+            pass
+        try:
+            if audio_wav_path and os.path.exists(audio_wav_path):
+                os.unlink(audio_wav_path)
+        except Exception:
+            pass
+        try:
+            if video_looped_path and os.path.exists(video_looped_path):
+                os.unlink(video_looped_path)
+        except Exception:
+            pass
+        try:
+            if final_video_path and os.path.exists(final_video_path):
+                os.unlink(final_video_path)
+        except Exception:
+            pass
+        for clip_path, _dur in scene_paths:
             try:
-                if p and os.path.exists(p):
-                    os.unlink(p)
+                if clip_path and os.path.exists(clip_path):
+                    os.unlink(clip_path)
             except Exception:
                 pass
 
