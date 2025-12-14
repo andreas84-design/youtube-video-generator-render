@@ -83,10 +83,66 @@ def generate():
         script = data.get("script", "")
         audioduration = data.get("audioduration")
 
-        # Dati per Pexels
-        broll_keywords = data.get("broll_keywords", "").strip()
-        topic = data.get("topic", "").strip()
+        # ===============================================
+        # PEXELS B-ROLL - SOLO keywords tradotte in inglese
+        # ===============================================
         sheet_keywords = data.get("keywords", "").strip()
+
+        # Dizionario traduzione specifica wellness/salute
+        translate_map = {
+            "donne": "women",
+            "menopausa": "menopause",
+            "vampate": "hot flashes",
+            "vampate di calore": "hot flashes",
+            "sonno": "sleep",
+            "insonnia": "insomnia",
+            "sonno disturbato": "insomnia",
+            "dimagrimento": "weight loss",
+            "pancia gonfia": "bloating",
+            "fame nervosa": "emotional eating",
+            "grasso": "fat",
+            "esercizio": "exercise",
+            "esercizio fisico": "exercise",
+            "dieta": "diet",
+            "benessere": "wellness",
+            "salute": "health",
+            "salute femminile": "women health",
+            "notte": "night",
+            "letto": "bed",
+            "stanchezza": "tired",
+            "sudorazione": "sweating",
+            "caldo": "hot",
+            "nottetempo": "night",
+            "riposo": "rest",
+            "relax": "relaxation",
+            "yoga": "yoga",
+            "meditazione": "meditation",
+        }
+
+        def translate_broll_keywords(keywords_text):
+            """Traduce keywords italiane → query Pexels inglese"""
+            if not keywords_text:
+                return "women health wellness sleep"
+            
+            # Splitta per virgole e pulisce
+            parts = [p.strip() for p in keywords_text.split(",")]
+            translated = []
+            
+            for part in parts:
+                if not part:
+                    continue
+                lower_part = part.lower().strip()
+                # Traduci se nel dizionario, altrimenti lascia originale
+                translation = translate_map.get(lower_part, lower_part)
+                translated.append(translation)
+            
+            # Join con spazi (Pexels usa spazi, non virgole)
+            broll_query = " ".join(translated)
+            return broll_query[:100]  # Pexels max ~100 char
+
+        # GENERA QUERY PER PEXELS - SOLO dalle keywords tradotte
+        pexels_query = translate_broll_keywords(sheet_keywords)
+        print(f"🔍 DEBUG Pexels query da keywords '{sheet_keywords}' → '{pexels_query}'")
 
         if not audiobase64:
             return jsonify({
@@ -95,23 +151,6 @@ def generate():
                 "video_url": None,
                 "duration": None,
             }), 400
-
-        # Fallback broll_keywords se mancano
-        if not broll_keywords:
-            words = script.split()[:8]
-            broll_keywords = " ".join(words) if words else "wellness meditation"
-
-        # Costruisci query Pexels combinando topic + broll_keywords + keywords del foglio
-        parts = []
-        if topic:
-            parts.append(topic)
-        if broll_keywords:
-            parts.append(broll_keywords)
-        if sheet_keywords:
-            parts.append(sheet_keywords)
-
-        base_query = " ".join(parts) if parts else "women menopause hot flashes night sleep"
-        pexels_query = base_query[:100]
 
         # 1. decode audio base64 -> temp .bin
         try:
