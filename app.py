@@ -162,6 +162,12 @@ def generate():
         # TRADUCI keywords italiane → inglese
         pexels_query = translate_broll_keywords(sheet_keywords)
 
+        # LOG VISIBILE SEMPRE
+        print("=" * 80)
+        print(f"🔴 KEYWORDS RICEVUTE DAL FOGLIO: '{sheet_keywords}'")
+        print(f"🟢 QUERY PEXELS TRADOTTA: '{pexels_query}'")
+        print("=" * 80)
+
         if not audiobase64:
             return jsonify({
                 "success": False,
