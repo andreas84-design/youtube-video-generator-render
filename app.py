@@ -10,7 +10,7 @@ import requests
 from flask import Flask, request, jsonify
 import boto3
 from botocore.config import Config
-from googletrans import Translator
+from deep_translator import GoogleTranslator
 
 app = Flask(__name__)
 
@@ -80,32 +80,37 @@ def cleanup_old_videos(s3_client, current_key):
 
 
 def translate_broll_keywords(keywords_text):
-    """Traduce keywords italiane → inglese DINAMICAMENTE usando Google Translate"""
+    """Traduce keywords italiane → inglese usando deep-translator (stabile)"""
     if not keywords_text:
         return "women health wellness sleep"
     
     try:
-        translator = Translator()
         parts = [p.strip() for p in keywords_text.split(",") if p.strip()]
         
         translated = []
         for part in parts:
-            result = translator.translate(part, src='it', dest='en')
-            translated.append(result.text.lower())
+            result = GoogleTranslator(source='it', target='en').translate(part)
+            translated.append(result.lower())
         
         broll_query = " ".join(translated)
         print(f"🌐 Traduzione keywords: '{keywords_text}' → '{broll_query}'")
         return broll_query[:100]
         
     except Exception as e:
-        print(f"⚠️ Errore traduzione Google Translate: {e}")
+        print(f"⚠️ Errore traduzione: {e}")
         # Fallback dizionario base
         fallback_map = {
             "donne": "women",
             "menopausa": "menopause",
             "vampate": "hot flashes",
+            "vampate di calore": "hot flashes",
             "sonno": "sleep",
+            "insonnia": "insomnia",
             "dimagrimento": "weight loss",
+            "pancia gonfia": "bloating",
+            "articolazioni": "joints",
+            "dolore": "pain",
+            "ginocchia": "knees",
             "benessere": "wellness",
             "salute": "health",
         }
