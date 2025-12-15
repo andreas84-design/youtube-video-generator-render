@@ -208,13 +208,13 @@ def generate():
             })
 
         # 🔥 STEP 2: DOWNLOAD PEXELS
-        for assignment in scene_assignments:
-            print(f"📍 Scene {assignment['scene']}: {assignment['timestamp']}s → '{assignment['context']}'", flush=True)
-            
-            headers = {"Authorization": PEXELS_API_KEY}
-            params = {"query": assignment['query'], "orientation": "landscape", "per_page": 1}
-            
-                try:
+for assignment in scene_assignments:
+    print(f"📍 Scene {assignment['scene']}: {assignment['timestamp']}s → '{assignment['context']}'", flush=True)
+    
+    headers = {"Authorization": PEXELS_API_KEY}
+    params = {"query": assignment['query'], "orientation": "landscape", "per_page": 1}
+    
+    try:
         resp = requests.get(
             "https://api.pexels.com/videos/search",
             headers=headers,
