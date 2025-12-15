@@ -221,9 +221,11 @@ def generate():
                     
                     tmp_clip = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
                     clip_resp = requests.get(video_url, stream=True, timeout=30)
-                    clip_resp.raise_for_status()
-                    for chunk in clip_resp.itercontent(1024*1024):
-                        if chunk: tmp_clip.write(chunk)
+clip_resp.raise_for_status()
+
+for chunk in clip_resp.iter_content(chunk_size=1024*1024):
+    if chunk:
+        tmp_clip.write(chunk)
                     tmp_clip.close()
                     scene_paths.append((tmp_clip.name, min(4.0, avg_scene_duration)))
             except Exception as e:
