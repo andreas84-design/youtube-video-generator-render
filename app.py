@@ -13,7 +13,7 @@ from deep_translator import GoogleTranslator
 
 app = Flask(__name__)
 
-# Config R2 (S3 compatibile) - MANTENUTO
+# Config R2 (S3 compatibile)
 R2_ACCESS_KEY_ID = os.environ.get("R2_ACCESS_KEY_ID")
 R2_SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY")
 R2_BUCKET_NAME = os.environ.get("R2_BUCKET_NAME")
@@ -25,7 +25,7 @@ R2_ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID")
 PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY")
 
 def get_s3_client():
-    """Client S3 configurato per Cloudflare R2 - INVARIATO"""
+    """Client S3 configurato per Cloudflare R2"""
     if R2_ACCOUNT_ID:
         endpoint_url = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
     else:
@@ -46,7 +46,7 @@ def get_s3_client():
     return s3_client
 
 def cleanup_old_videos(s3_client, current_key):
-    """Cancella tutti i video MP4 in R2 TRANNE quello appena caricato - INVARIATO"""
+    """Cancella tutti i video MP4 in R2 TRANNE quello appena caricato"""
     try:
         paginator = s3_client.get_paginator('list_objects_v2')
         pages = paginator.paginate(Bucket=R2_BUCKET_NAME, Prefix="videos/")
@@ -107,7 +107,7 @@ def translate_broll_keywords(keywords_text, script_context=""):
 
 @app.route("/ffmpeg-test", methods=["GET"])
 def ffmpeg_test():
-    """Test FFmpeg - INVARIATO"""
+    """Test FFmpeg"""
     result = subprocess.run(
         ["ffmpeg", "-version"],
         stdout=subprocess.PIPE,
@@ -119,7 +119,7 @@ def ffmpeg_test():
 
 @app.route("/generate", methods=["POST"])
 def generate():
-    """🎬 SCENE-SYNC + R2 + 12-14min"""
+    """🎬 SCENE-SYNC + R2"""
     audiopath = None
     audio_wav_path = None
     video_looped_path = None
@@ -139,14 +139,14 @@ def generate():
         data = request.get_json(force=True) or {}
         audiobase64 = data.get("audiobase64")
 
-        # --- SCRIPT (può arrivare lista o stringa) ---
+        # --- SCRIPT (lista o stringa) ---
         raw_script = data.get("script", "")
         if isinstance(raw_script, list):
             script = " ".join(str(p).strip() for p in raw_script)
         else:
             script = str(raw_script).strip()
 
-        # --- KEYWORDS (possono arrivare lista o stringa) ---
+        # --- KEYWORDS (lista o stringa) ---
         raw_keywords = data.get("keywords", "")
         if isinstance(raw_keywords, list):
             sheet_keywords = ", ".join(str(k).strip() for k in raw_keywords)
@@ -159,7 +159,7 @@ def generate():
         if not audiobase64:
             return jsonify({"success": False, "error": "audiobase64 mancante"}), 400
 
-        # 1. Audio processing (INVARIATO)
+        # 1. Audio processing
         audio_bytes = base64.b64decode(audiobase64)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as f:
             f.write(audio_bytes)
@@ -187,13 +187,12 @@ def generate():
 
         print(f"⏱️  Durata audio: {real_duration/60:.1f}min ({real_duration:.0f}s)", flush=True)
 
-        # 🔥 STEP 1: SCENE-SYNC INTELLIGENTE
+        # 🔥 STEP 1: SCENE-SYNC
         script_words = script.lower().split()
-        words_per_second = len(script_words) / real_duration if real_duration > 0 else 2.5
-        
+        words_per_second = len(script_words) / real_duration if real_duration > 0 else 2.5        
         print(f"🎯 SYNC: {len(script_words)} parole / {real_duration:.0f}s = {words_per_second:.1f} w/s", flush=True)
 
-        # Genera 25 scene contestualizzate
+        # Genera 25 scene
         scene_assignments = []
         avg_scene_duration = real_duration / 25
         
@@ -208,7 +207,7 @@ def generate():
                 'context': scene_context[:30], 'query': scene_query[:50]
             })
 
-        # 🔥 STEP 2: 25 PEXELS UNIQUELY
+        # 🔥 STEP 2: DOWNLOAD PEXELS
         for assignment in scene_assignments:
             print(f"📍 Scene {assignment['scene']}: {assignment['timestamp']}s → '{assignment['context']}'", flush=True)
             
@@ -223,14 +222,15 @@ def generate():
                     tmp_clip = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
                     clip_resp = requests.get(video_url, stream=True, timeout=30)
                     clip_resp.raise_for_status()
-                    for chunk in clip_resp.iter_content(1024*1024):
+                    for chunk in clip_resp.itercontent(1024*1024):
                         if chunk: tmp_clip.write(chunk)
                     tmp_clip.close()
                     scene_paths.append((tmp_clip.name, min(4.0, avg_scene_duration)))
-            except:
+            except Exception as e:
+                print(f"⚠️ Errore download clip Pexels scena {assignment['scene']}: {e}", flush=True)
                 continue
 
-        print(f"✅ CLIPS: {len(scene_paths)}/25 scaricate", flush=True)
+        print(f"✅ CLIPS SCARICATE: {len(scene_paths)}/25", flush=True)
 
         # 3. Normalize clips
         normalized_clips = []
@@ -247,7 +247,15 @@ def generate():
             subprocess.run(normalize_cmd, timeout=120, check=True)
             normalized_clips.append(normalized_path)
 
-        # 4. Concat with transitions
+        print(f"🎞️ NORMALIZED CLIPS: {len(normalized_clips)}", flush=True)
+        for p in normalized_clips:
+            print(f"   - {p}", flush=True)
+
+        # Se per qualche motivo c'è solo una clip, la usiamo in loop
+        if not normalized_clips:
+            raise RuntimeError("Nessuna clip normalizzata disponibile")
+        
+        # 4. Concat tutte le clip
         concat_list_tmp = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt")
         for norm_path in normalized_clips:
             concat_list_tmp.write(f"file '{norm_path}'\n")
@@ -258,18 +266,17 @@ def generate():
         video_looped_tmp.close()
 
         concat_cmd = [
-    "ffmpeg", "-y", "-loglevel", "error", 
-    "-f", "concat", "-safe", "0", "-i", concat_list_tmp.name,
-    "-vf", "fps=30,format=yuv420p",  # forza 30fps costante
-    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-    "-t", str(real_duration), 
-    video_looped_path,
-]
-
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-f", "concat", "-safe", "0", "-i", concat_list_tmp.name,
+            "-vf", "fps=30,format=yuv420p",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-t", str(real_duration),
+            video_looped_path,
+        ]
         subprocess.run(concat_cmd, timeout=300, check=True)
         os.unlink(concat_list_tmp.name)
 
-        # 5. Final merge CON TRANSIZIONI SMOOTH
+        # 5. Merge video + audio
         final_video_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         final_video_path = final_video_tmp.name
         final_video_tmp.close()
@@ -288,7 +295,7 @@ def generate():
         ]
         subprocess.run(merge_cmd, timeout=300, check=True)
 
-        # 6. Upload R2 + ROTAZIONE
+        # 6. Upload R2 + rotazione
         s3_client = get_s3_client()
         today = dt.datetime.utcnow().strftime("%Y-%m-%d")
         object_key = f"videos/{today}/{uuid.uuid4().hex}.mp4"
@@ -318,7 +325,7 @@ def generate():
             "duration": real_duration,
             "words_per_second": words_per_second,
             "video_url": public_url,
-            "scenes": scene_assignments[:3]
+            "scenes": scene_assignments[:3],
         })
 
     except Exception as e:
