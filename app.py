@@ -75,49 +75,38 @@ def cleanup_old_videos(s3_client, current_key):
 
 
 def translate_broll_keywords(keywords_text, script_context=""):
-    """Traduce keywords italiane → inglese + contesto script"""
+    """Traduce il contesto di scena + (fallback) alcune keyword, per query Pexels più varie."""
     if not keywords_text:
-        return "women health wellness sleep"
+        keywords_text = "donne, salute, benessere, sonno"
 
     try:
-        parts = [p.strip() for p in keywords_text.split(",") if p.strip()]
-        translated = []
-        for part in parts:
-            result = GoogleTranslator(source="it", target="en").translate(part)
-            translated.append(result.lower())
+        # 1) Prova a tradurre il PEZZO di script della scena (priorità)
+        context = (script_context or "").strip()
+        query_parts = []
 
-        base_query = " ".join(translated)
-        if script_context:
-            full_query = f"{base_query} {script_context[:20]}"
-        else:
-            full_query = base_query
+        if context:
+            context_en = GoogleTranslator(source="it", target="en").translate(context[:70])
+            query_parts.append(context_en.lower())
+
+        # 2) Aggiungi 2–3 keyword tradotte come supporto
+        parts = [p.strip() for p in keywords_text.split(",") if p.strip()]
+        for part in parts[:3]:
+            kw_en = GoogleTranslator(source="it", target="en").translate(part)
+            query_parts.append(kw_en.lower())
+
+        # 3) Costruisci query finale (max 80 char per sicurezza)
+        full_query = " ".join(query_parts).strip()[:80]
 
         print(
-            f"🌐 Traduzione: '{keywords_text}' + '{script_context[:30]}' → '{full_query[:60]}'",
+            f"🌐 Query Pexels: ctx='{script_context[:30]}' kw='{keywords_text}' → '{full_query}'",
             flush=True,
         )
-        return full_query[:100]
+        return full_query or "women health wellness"
 
     except Exception as e:
         print(f"⚠️ Errore traduzione: {e}", flush=True)
-        fallback_map = {
-            "donne": "women",
-            "menopausa": "menopause",
-            "vampate": "hot flashes",
-            "vampate di calore": "hot flashes",
-            "sonno": "sleep",
-            "insonnia": "insomnia",
-            "dimagrimento": "weight loss",
-            "pancia gonfia": "bloating",
-            "articolazioni": "joints",
-            "dolore": "pain",
-            "ginocchia": "knees",
-            "benessere": "wellness",
-            "salute": "health",
-        }
-        parts = [p.strip().lower() for p in keywords_text.split(",")]
-        translated = [fallback_map.get(p, p) for p in parts]
-        return " ".join(translated)[:100]
+        # Fallback molto generico ma sicuro
+        return "women health wellness lifestyle"
 
 
 @app.route("/ffmpeg-test", methods=["GET"])
