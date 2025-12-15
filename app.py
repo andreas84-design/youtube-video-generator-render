@@ -53,7 +53,6 @@ def cleanup_old_videos(s3_client, current_key):
     Mantiene solo l'ultimo video pubblicato.
     """
     try:
-        # Lista TUTTI gli oggetti nel bucket
         paginator = s3_client.get_paginator('list_objects_v2')
         pages = paginator.paginate(Bucket=R2_BUCKET_NAME, Prefix="videos/")
         
@@ -64,19 +63,18 @@ def cleanup_old_videos(s3_client, current_key):
                 
             for obj in page['Contents']:
                 key = obj['Key']
-                # Cancella SOLO MP4 che NON sono il video appena caricato
                 if key.endswith('.mp4') and key != current_key:
                     s3_client.delete_object(Bucket=R2_BUCKET_NAME, Key=key)
                     deleted_count += 1
-                    print(f"🗑️  Cancellato vecchio video: {key}")
+                    print(f"🗑️  Cancellato vecchio video: {key}", flush=True)
         
         if deleted_count > 0:
-            print(f"✅ Rotazione completata: {deleted_count} video vecchi rimossi")
+            print(f"✅ Rotazione completata: {deleted_count} video vecchi rimossi", flush=True)
         else:
-            print("✅ Nessun video vecchio da rimuovere")
+            print("✅ Nessun video vecchio da rimuovere", flush=True)
             
     except Exception as e:
-        print(f"⚠️  Errore rotazione R2 (video vecchi restano): {str(e)}")
+        print(f"⚠️  Errore rotazione R2 (video vecchi restano): {str(e)}", flush=True)
 
 
 def translate_broll_keywords(keywords_text):
@@ -93,12 +91,11 @@ def translate_broll_keywords(keywords_text):
             translated.append(result.lower())
         
         broll_query = " ".join(translated)
-        print(f"🌐 Traduzione keywords: '{keywords_text}' → '{broll_query}'")
+        print(f"🌐 Traduzione keywords: '{keywords_text}' → '{broll_query}'", flush=True)
         return broll_query[:100]
         
     except Exception as e:
-        print(f"⚠️ Errore traduzione: {e}")
-        # Fallback dizionario base
+        print(f"⚠️ Errore traduzione: {e}", flush=True)
         fallback_map = {
             "donne": "women",
             "menopausa": "menopause",
@@ -163,10 +160,11 @@ def generate():
         pexels_query = translate_broll_keywords(sheet_keywords)
 
         # LOG VISIBILE SEMPRE
-        print("=" * 80)
-        print(f"🔴 KEYWORDS RICEVUTE DAL FOGLIO: '{sheet_keywords}'")
-        print(f"🟢 QUERY PEXELS TRADOTTA: '{pexels_query}'")
-        print("=" * 80)
+        sep = "=" * 80
+        print(sep, flush=True)
+        print(f"🔴 KEYWORDS RICEVUTE DAL FOGLIO: '{sheet_keywords}'", flush=True)
+        print(f"🟢 QUERY PEXELS TRADOTTA: '{pexels_query}'", flush=True)
+        print(sep, flush=True)
 
         if not audiobase64:
             return jsonify({
@@ -198,6 +196,7 @@ def generate():
 
         convert_audio_cmd = [
             "ffmpeg", "-y",
+            "-loglevel", "error",
             "-i", audiopath,
             "-acodec", "pcm_s16le",
             "-ar", "48000",
@@ -342,6 +341,7 @@ def generate():
 
             normalize_cmd = [
                 "ffmpeg", "-y",
+                "-loglevel", "error",
                 "-i", clip_path,
                 "-vf", "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,fps=30",
                 "-c:v", "libx264",
@@ -364,6 +364,7 @@ def generate():
 
         concat_cmd = [
             "ffmpeg", "-y",
+            "-loglevel", "error",
             "-f", "concat",
             "-safe", "0",
             "-i", concat_list_tmp.name,
@@ -388,6 +389,7 @@ def generate():
 
         merge_cmd = [
             "ffmpeg", "-y",
+            "-loglevel", "error",
             "-i", video_looped_path,
             "-i", audiopath,
             "-filter:v",
@@ -426,7 +428,7 @@ def generate():
         public_url = f"{R2_PUBLIC_BASE_URL.rstrip('/')}/{object_key}"
 
         # 8. ROTAZIONE R2 - Cancella tutti i video vecchi tranne questo
-        print("🔄 Avvio rotazione R2...")
+        print("🔄 Avvio rotazione R2...", flush=True)
         cleanup_old_videos(s3_client, object_key)
 
         # cleanup locali
@@ -492,6 +494,8 @@ def generate():
             except Exception:
                 pass
 
+        print(f"❌ ERRORE GENERATE: {e}", flush=True)
+
         return jsonify({
             "success": False,
             "error": str(e),
@@ -501,5 +505,6 @@ def generate():
 
 
 if __name__ == "__main__":
+    # Suggerito: in Railway imposta anche PYTHONUNBUFFERED=1 nelle env
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
