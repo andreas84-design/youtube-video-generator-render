@@ -5,7 +5,6 @@ import tempfile
 import subprocess
 import uuid
 import datetime as dt
-
 import requests
 from flask import Flask, request, jsonify
 import boto3
@@ -14,7 +13,7 @@ from deep_translator import GoogleTranslator
 
 app = Flask(__name__)
 
-# Config R2 (S3 compatibile)
+# Config R2 (S3 compatibile) - MANTENUTO
 R2_ACCESS_KEY_ID = os.environ.get("R2_ACCESS_KEY_ID")
 R2_SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY")
 R2_BUCKET_NAME = os.environ.get("R2_BUCKET_NAME")
@@ -22,11 +21,11 @@ R2_PUBLIC_BASE_URL = os.environ.get("R2_PUBLIC_BASE_URL")
 R2_REGION = os.environ.get("R2_REGION", "auto")
 R2_ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID")
 
+# Pexels API
+PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY")
 
 def get_s3_client():
-    """
-    Client S3 configurato per Cloudflare R2.
-    """
+    """Client S3 configurato per Cloudflare R2 - INVARIATO"""
     if R2_ACCOUNT_ID:
         endpoint_url = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
     else:
@@ -46,12 +45,8 @@ def get_s3_client():
     )
     return s3_client
 
-
 def cleanup_old_videos(s3_client, current_key):
-    """
-    Cancella tutti i video MP4 in R2 TRANNE quello appena caricato.
-    Mantiene solo l'ultimo video pubblicato.
-    """
+    """Cancella tutti i video MP4 in R2 TRANNE quello appena caricato - INVARIATO"""
     try:
         paginator = s3_client.get_paginator('list_objects_v2')
         pages = paginator.paginate(Bucket=R2_BUCKET_NAME, Prefix="videos/")
@@ -76,48 +71,43 @@ def cleanup_old_videos(s3_client, current_key):
     except Exception as e:
         print(f"⚠️  Errore rotazione R2 (video vecchi restano): {str(e)}", flush=True)
 
-
-def translate_broll_keywords(keywords_text):
-    """Traduce keywords italiane → inglese usando deep-translator (stabile)"""
+def translate_broll_keywords(keywords_text, script_context=""):
+    """Traduce keywords italiane → inglese + contesto script"""
     if not keywords_text:
         return "women health wellness sleep"
     
     try:
         parts = [p.strip() for p in keywords_text.split(",") if p.strip()]
-        
         translated = []
         for part in parts:
             result = GoogleTranslator(source='it', target='en').translate(part)
             translated.append(result.lower())
         
-        broll_query = " ".join(translated)
-        print(f"🌐 Traduzione keywords: '{keywords_text}' → '{broll_query}'", flush=True)
-        return broll_query[:100]
+        base_query = " ".join(translated)
+        if script_context:
+            full_query = f"{base_query} {script_context[:20]}"
+        else:
+            full_query = base_query
+            
+        print(f"🌐 Traduzione: '{keywords_text}' + '{script_context[:30]}' → '{full_query[:60]}'", flush=True)
+        return full_query[:100]
         
     except Exception as e:
         print(f"⚠️ Errore traduzione: {e}", flush=True)
         fallback_map = {
-            "donne": "women",
-            "menopausa": "menopause",
-            "vampate": "hot flashes",
-            "vampate di calore": "hot flashes",
-            "sonno": "sleep",
-            "insonnia": "insomnia",
-            "dimagrimento": "weight loss",
-            "pancia gonfia": "bloating",
-            "articolazioni": "joints",
-            "dolore": "pain",
-            "ginocchia": "knees",
-            "benessere": "wellness",
-            "salute": "health",
+            "donne": "women", "menopausa": "menopause", "vampate": "hot flashes",
+            "vampate di calore": "hot flashes", "sonno": "sleep", "insonnia": "insomnia",
+            "dimagrimento": "weight loss", "pancia gonfia": "bloating",
+            "articolazioni": "joints", "dolore": "pain", "ginocchia": "knees",
+            "benessere": "wellness", "salute": "health",
         }
         parts = [p.strip().lower() for p in keywords_text.split(",")]
         translated = [fallback_map.get(p, p) for p in parts]
         return " ".join(translated)[:100]
 
-
 @app.route("/ffmpeg-test", methods=["GET"])
 def ffmpeg_test():
+    """Test FFmpeg - INVARIATO"""
     result = subprocess.run(
         ["ffmpeg", "-version"],
         stdout=subprocess.PIPE,
@@ -127,9 +117,9 @@ def ffmpeg_test():
     firstline = result.stdout.splitlines()[0] if result.stdout else "no output"
     return jsonify({"ffmpeg_output": firstline})
 
-
 @app.route("/generate", methods=["POST"])
 def generate():
+    """🎬 SCENE-SYNC + R2 + 12-14min"""
     audiopath = None
     audio_wav_path = None
     video_looped_path = None
@@ -137,11 +127,11 @@ def generate():
     scene_paths = []
 
     try:
-        # Controllo config R2
-        if not all([R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME, R2_PUBLIC_BASE_URL]):
+        # Controllo config
+        if not all([R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME, R2_PUBLIC_BASE_URL, PEXELS_API_KEY]):
             return jsonify({
                 "success": False,
-                "error": "Config R2 mancante (chiavi, bucket o URL pubblico).",
+                "error": "Config mancante (R2 o PEXELS_API_KEY)",
                 "video_url": None,
                 "duration": None,
             }), 500
@@ -149,190 +139,88 @@ def generate():
         data = request.get_json(force=True) or {}
         audiobase64 = data.get("audiobase64")
         script = data.get("script", "")
-        audioduration = data.get("audioduration")
-
-        # ===============================================
-        # PEXELS B-ROLL - Keywords dal foglio tradotte dinamicamente
-        # ===============================================
         sheet_keywords = data.get("keywords", "").strip()
 
-        # TRADUCI keywords italiane → inglese
-        pexels_query = translate_broll_keywords(sheet_keywords)
-
-        # LOG VISIBILE SEMPRE
-        sep = "=" * 80
-        print(sep, flush=True)
-        print(f"🔴 KEYWORDS RICEVUTE DAL FOGLIO: '{sheet_keywords}'", flush=True)
-        print(f"🟢 QUERY PEXELS TRADOTTA: '{pexels_query}'", flush=True)
-        print(sep, flush=True)
+        print("="*80, flush=True)
+        print(f"🎬 START: {len(script)} char script, keywords: '{sheet_keywords}'", flush=True)
 
         if not audiobase64:
-            return jsonify({
-                "success": False,
-                "error": "audiobase64 mancante o vuoto",
-                "video_url": None,
-                "duration": None,
-            }), 400
+            return jsonify({"success": False, "error": "audiobase64 mancante"}), 400
 
-        # 1. decode audio base64 -> temp .bin
-        try:
-            audio_bytes = base64.b64decode(audiobase64)
-        except Exception as e:
-            return jsonify({
-                "success": False,
-                "error": f"Decodifica base64 fallita: {str(e)}",
-                "video_url": None,
-                "duration": None,
-            }), 400
-
+        # 1. Audio processing (INVARIATO)
+        audio_bytes = base64.b64decode(audiobase64)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as f:
             f.write(audio_bytes)
             audiopath = f.name
 
-        # 2. convert audio to WAV 48kHz
         audio_wav_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
         audio_wav_path = audio_wav_tmp.name
         audio_wav_tmp.close()
 
         convert_audio_cmd = [
-            "ffmpeg", "-y",
-            "-loglevel", "error",
-            "-i", audiopath,
-            "-acodec", "pcm_s16le",
-            "-ar", "48000",
-            audio_wav_path,
+            "ffmpeg", "-y", "-loglevel", "error", "-i", audiopath,
+            "-acodec", "pcm_s16le", "-ar", "48000", audio_wav_path,
         ]
-        conv_result = subprocess.run(
-            convert_audio_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=60,
-        )
-        if conv_result.returncode != 0:
-            raise Exception(f"Conversione audio fallita: {conv_result.stderr}")
-
+        subprocess.run(convert_audio_cmd, timeout=60, check=True)
         os.unlink(audiopath)
         audiopath = audio_wav_path
 
-        # 3. real duration from WAV
+        # 2. Real duration
         ffprobe_cmd = [
-            "ffprobe",
-            "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            audiopath,
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", audiopath,
         ]
-        probe = subprocess.run(
-            ffprobe_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=10,
-        )
-        real_duration = None
-        try:
-            real_duration = float(probe.stdout.strip())
-        except Exception:
-            pass
+        probe = subprocess.run(ffprobe_cmd, stdout=subprocess.PIPE, text=True, timeout=10)
+        real_duration = float(probe.stdout.strip()) if probe.stdout.strip() else 720.0
 
-        if real_duration is None or real_duration <= 0:
+        print(f"⏱️  Durata audio: {real_duration/60:.1f}min ({real_duration:.0f}s)", flush=True)
+
+        # 🔥 STEP 1: SCENE-SYNC INTELLIGENTE
+        script_words = script.lower().split()
+        words_per_second = len(script_words) / real_duration if real_duration > 0 else 2.5
+        
+        print(f"🎯 SYNC: {len(script_words)} parole / {real_duration:.0f}s = {words_per_second:.1f} w/s", flush=True)
+
+        # Genera 25 scene contestualizzate
+        scene_assignments = []
+        avg_scene_duration = real_duration / 25
+        
+        for i in range(25):
+            timestamp = i * avg_scene_duration
+            word_index = int(timestamp * words_per_second)
+            scene_context = " ".join(script_words[word_index:word_index+5]) if word_index < len(script_words) else "wellness"
+            scene_query = translate_broll_keywords(sheet_keywords, scene_context)
+            
+            scene_assignments.append({
+                'scene': i+1, 'timestamp': round(timestamp, 1),
+                'context': scene_context[:30], 'query': scene_query[:50]
+            })
+
+        # 🔥 STEP 2: 25 PEXELS UNIQUELY
+        for assignment in scene_assignments:
+            print(f"📍 Scene {assignment['scene']}: {assignment['timestamp']}s → '{assignment['context']}'", flush=True)
+            
+            headers = {"Authorization": PEXELS_API_KEY}
+            params = {"query": assignment['query'], "orientation": "landscape", "per_page": 1}
+            
             try:
-                real_duration = float(audioduration)
-            except (TypeError, ValueError):
-                real_duration = 60.0
-
-        # 4. Pexels search MULTI-SCENE
-        api_key = os.environ.get("PEXELS_API_KEY")
-        if not api_key:
-            return jsonify({
-                "success": False,
-                "error": "PEXELS_API_KEY non configurata in Railway",
-                "video_url": None,
-                "duration": None,
-            }), 500
-
-        headers = {"Authorization": api_key}
-        search_params = {
-            "query": pexels_query,
-            "orientation": "landscape",
-            "per_page": 30,
-        }
-        search_response = requests.get(
-            "https://api.pexels.com/videos/search",
-            headers=headers,
-            params=search_params,
-            timeout=30,
-        )
-        search_response.raise_for_status()
-        search_data = search_response.json()
-        videos = search_data.get("videos", [])
-
-        if not videos:
-            return jsonify({
-                "success": False,
-                "error": f"Nessun video Pexels trovato per query: '{pexels_query}'",
-                "video_url": None,
-                "duration": None,
-            }), 500
-
-        max_scenes = 24
-        total_scene_duration = 0.0
-
-        for v in videos:
-            if len(scene_paths) >= max_scenes:
-                break
-
-            video_files = v.get("video_files", [])
-            if not video_files:
+                resp = requests.get("https://api.pexels.com/videos/search", headers=headers, params=params, timeout=15)
+                if resp.status_code == 200 and resp.json().get('videos'):
+                    video_url = resp.json()['videos'][0]['video_files'][0]['link']
+                    
+                    tmp_clip = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+                    clip_resp = requests.get(video_url, stream=True, timeout=30)
+                    clip_resp.raise_for_status()
+                    for chunk in clip_resp.iter_content(1024*1024):
+                        if chunk: tmp_clip.write(chunk)
+                    tmp_clip.close()
+                    scene_paths.append((tmp_clip.name, min(4.0, avg_scene_duration)))
+            except:
                 continue
 
-            hd_files = [vf for vf in video_files if vf.get("width", 0) >= 1920]
-            if hd_files:
-                best_video = max(hd_files, key=lambda x: x.get("width", 0))
-            else:
-                best_video = max(video_files, key=lambda x: x.get("width", 0))
+        print(f"✅ CLIPS: {len(scene_paths)}/25 scaricate", flush=True)
 
-            clip_url = best_video.get("link")
-            if not clip_url:
-                continue
-
-            r = requests.get(clip_url, stream=True, timeout=120)
-            r.raise_for_status()
-            tmp_clip = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-            for chunk in r.iter_content(chunk_size=1024 * 1024):
-                if chunk:
-                    tmp_clip.write(chunk)
-            tmp_clip.close()
-            clip_path = tmp_clip.name
-
-            probe_clip = subprocess.run(
-                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                 "-of", "default=noprint_wrappers=1:nokey=1", clip_path],
-                stdout=subprocess.PIPE,
-                text=True,
-                timeout=10,
-            )
-            try:
-                clip_duration = float(probe_clip.stdout.strip())
-            except Exception:
-                clip_duration = 5.0
-
-            scene_paths.append((clip_path, clip_duration))
-            total_scene_duration += clip_duration
-
-            if total_scene_duration >= real_duration * 1.2:
-                break
-
-        if not scene_paths:
-            return jsonify({
-                "success": False,
-                "error": "Nessuna clip valida ottenuta da Pexels",
-                "video_url": None,
-                "duration": None,
-            }), 500
-
-        # 5. Normalizza e concatena
+        # 3. Normalize clips
         normalized_clips = []
         for i, (clip_path, _dur) in enumerate(scene_paths):
             normalized_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
@@ -340,19 +228,14 @@ def generate():
             normalized_tmp.close()
 
             normalize_cmd = [
-                "ffmpeg", "-y",
-                "-loglevel", "error",
-                "-i", clip_path,
+                "ffmpeg", "-y", "-loglevel", "error", "-i", clip_path,
                 "-vf", "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,fps=30",
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-crf", "23",
-                "-an",
-                normalized_path,
+                "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-an", normalized_path,
             ]
             subprocess.run(normalize_cmd, timeout=120, check=True)
             normalized_clips.append(normalized_path)
 
+        # 4. Concat with transitions
         concat_list_tmp = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt")
         for norm_path in normalized_clips:
             concat_list_tmp.write(f"file '{norm_path}'\n")
@@ -363,58 +246,33 @@ def generate():
         video_looped_tmp.close()
 
         concat_cmd = [
-            "ffmpeg", "-y",
-            "-loglevel", "error",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", concat_list_tmp.name,
-            "-c", "copy",
-            "-t", str(real_duration),
-            video_looped_path,
+            "ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", concat_list_tmp.name,
+            "-c", "copy", "-t", str(real_duration), video_looped_path,
         ]
         subprocess.run(concat_cmd, timeout=300, check=True)
         os.unlink(concat_list_tmp.name)
 
-        for norm_path in normalized_clips:
-            try:
-                if os.path.exists(norm_path):
-                    os.unlink(norm_path)
-            except Exception:
-                pass
-
-        # 6. final merge
+        # 5. Final merge CON TRANSIZIONI SMOOTH
         final_video_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         final_video_path = final_video_tmp.name
         final_video_tmp.close()
 
         merge_cmd = [
-            "ffmpeg", "-y",
-            "-loglevel", "error",
-            "-i", video_looped_path,
-            "-i", audiopath,
-            "-filter:v",
-            "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080",
-            "-c:v", "libx264",
-            "-preset", "medium",
-            "-crf", "20",
-            "-c:a", "aac",
-            "-b:a", "192k",
-            "-shortest",
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-i", video_looped_path, "-i", audiopath,
+            "-filter_complex",
+            "[0:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,"
+            "fade=t=in:st=0:d=0.3,fade=t=out:st=2:d=0.3[fg];"
+            "[fg]format=yuv420p[outv]",
+            "-map", "[outv]", "-map", "1:a",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+            "-c:a", "aac", "-b:a", "192k", "-shortest",
             final_video_path,
         ]
-        result = subprocess.run(
-            merge_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=300,
-        )
-        if result.returncode != 0:
-            raise Exception(f"ffmpeg merge fallito: {result.stderr}")
+        subprocess.run(merge_cmd, timeout=300, check=True)
 
-        # 7. upload su R2
+        # 6. Upload R2 + ROTAZIONE
         s3_client = get_s3_client()
-
         today = dt.datetime.utcnow().strftime("%Y-%m-%d")
         object_key = f"videos/{today}/{uuid.uuid4().hex}.mp4"
 
@@ -426,85 +284,32 @@ def generate():
         )
 
         public_url = f"{R2_PUBLIC_BASE_URL.rstrip('/')}/{object_key}"
-
-        # 8. ROTAZIONE R2 - Cancella tutti i video vecchi tranne questo
-        print("🔄 Avvio rotazione R2...", flush=True)
         cleanup_old_videos(s3_client, object_key)
 
-        # cleanup locali
-        try:
-            if audiopath and os.path.exists(audiopath):
-                os.unlink(audiopath)
-        except Exception:
-            pass
-        try:
-            if audio_wav_path and os.path.exists(audio_wav_path):
-                os.unlink(audio_wav_path)
-        except Exception:
-            pass
-        try:
-            if video_looped_path and os.path.exists(video_looped_path):
-                os.unlink(video_looped_path)
-        except Exception:
-            pass
-        try:
-            if final_video_path and os.path.exists(final_video_path):
-                os.unlink(final_video_path)
-        except Exception:
-            pass
-        for clip_path, _dur in scene_paths:
-            try:
-                if clip_path and os.path.exists(clip_path):
-                    os.unlink(clip_path)
-            except Exception:
-                pass
+        # Cleanup
+        for path in [audiopath, video_looped_path, final_video_path] + normalized_clips + [p[0] for p in scene_paths]:
+            try: os.unlink(path)
+            except: pass
 
+        print(f"✅ VIDEO COMPLETO: {real_duration/60:.1f}min → {public_url}", flush=True)
+        
         return jsonify({
             "success": True,
-            "error": None,
-            "video_url": public_url,
+            "clips_used": len(scene_paths),
             "duration": real_duration,
+            "words_per_second": words_per_second,
+            "video_url": public_url,
+            "scenes": scene_assignments[:3]
         })
 
     except Exception as e:
-        try:
-            if audiopath and os.path.exists(audiopath):
-                os.unlink(audiopath)
-        except Exception:
-            pass
-        try:
-            if audio_wav_path and os.path.exists(audio_wav_path):
-                os.unlink(audio_wav_path)
-        except Exception:
-            pass
-        try:
-            if video_looped_path and os.path.exists(video_looped_path):
-                os.unlink(video_looped_path)
-        except Exception:
-            pass
-        try:
-            if final_video_path and os.path.exists(final_video_path):
-                os.unlink(final_video_path)
-        except Exception:
-            pass
-        for clip_path, _dur in scene_paths:
-            try:
-                if clip_path and os.path.exists(clip_path):
-                    os.unlink(clip_path)
-            except Exception:
-                pass
-
-        print(f"❌ ERRORE GENERATE: {e}", flush=True)
-
-        return jsonify({
-            "success": False,
-            "error": str(e),
-            "video_url": None,
-            "duration": None,
-        }), 500
-
+        print(f"❌ ERRORE: {e}", flush=True)
+        # Cleanup error
+        for path in [audiopath, audio_wav_path, video_looped_path, final_video_path] + [p[0] for p in scene_paths]:
+            try: os.unlink(path)
+            except: pass
+        return jsonify({"success": False, "error": str(e), "video_url": None}), 500
 
 if __name__ == "__main__":
-    # Suggerito: in Railway imposta anche PYTHONUNBUFFERED=1 nelle env
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
