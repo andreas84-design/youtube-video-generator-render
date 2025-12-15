@@ -319,10 +319,43 @@ def generate():
         if not normalized_clips:
             raise RuntimeError("Nessuna clip normalizzata disponibile")
 
-        # 4. Concat tutte le clip
-        concat_list_tmp = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt")
+                # 4. Concat tutte le clip (con loop se necessario)
+        # Calcola durata totale delle clip disponibili
+        total_clips_duration = 0.0
         for norm_path in normalized_clips:
-            concat_list_tmp.write(f"file '{norm_path}'\n")
+            probe_cmd = [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                norm_path,
+            ]
+            result = subprocess.run(probe_cmd, stdout=subprocess.PIPE, text=True, timeout=10)
+            dur_str = result.stdout.strip()
+            clip_dur = float(dur_str) if dur_str else 4.0
+            total_clips_duration += clip_dur
+
+        print(
+            f"🎞️ Durata clip totali: {total_clips_duration:.1f}s vs audio: {real_duration:.1f}s",
+            flush=True,
+        )
+
+        # Crea il file di concat, loopando le clip se non bastano
+        concat_list_tmp = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt")
+
+        if total_clips_duration < real_duration:
+            loops_needed = int(real_duration / total_clips_duration) + 1
+            print(f"🔁 Loop clip {loops_needed}x per coprire audio", flush=True)
+            for _ in range(loops_needed):
+                for norm_path in normalized_clips:
+                    concat_list_tmp.write(f"file '{norm_path}'\n")
+        else:
+            for norm_path in normalized_clips:
+                concat_list_tmp.write(f"file '{norm_path}'\n")
+
         concat_list_tmp.close()
 
         video_looped_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
