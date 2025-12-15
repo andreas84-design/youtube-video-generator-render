@@ -138,8 +138,20 @@ def generate():
 
         data = request.get_json(force=True) or {}
         audiobase64 = data.get("audiobase64")
-        script = data.get("script", "")
-        sheet_keywords = data.get("keywords", "").strip()
+
+        # --- SCRIPT (può arrivare lista o stringa) ---
+        raw_script = data.get("script", "")
+        if isinstance(raw_script, list):
+            script = " ".join(str(p).strip() for p in raw_script)
+        else:
+            script = str(raw_script).strip()
+
+        # --- KEYWORDS (possono arrivare lista o stringa) ---
+        raw_keywords = data.get("keywords", "")
+        if isinstance(raw_keywords, list):
+            sheet_keywords = ", ".join(str(k).strip() for k in raw_keywords)
+        else:
+            sheet_keywords = str(raw_keywords).strip()
 
         print("="*80, flush=True)
         print(f"🎬 START: {len(script)} char script, keywords: '{sheet_keywords}'", flush=True)
@@ -288,8 +300,10 @@ def generate():
 
         # Cleanup
         for path in [audiopath, video_looped_path, final_video_path] + normalized_clips + [p[0] for p in scene_paths]:
-            try: os.unlink(path)
-            except: pass
+            try:
+                os.unlink(path)
+            except:
+                pass
 
         print(f"✅ VIDEO COMPLETO: {real_duration/60:.1f}min → {public_url}", flush=True)
         
@@ -306,8 +320,10 @@ def generate():
         print(f"❌ ERRORE: {e}", flush=True)
         # Cleanup error
         for path in [audiopath, audio_wav_path, video_looped_path, final_video_path] + [p[0] for p in scene_paths]:
-            try: os.unlink(path)
-            except: pass
+            try:
+                os.unlink(path)
+            except:
+                pass
         return jsonify({"success": False, "error": str(e), "video_url": None}), 500
 
 if __name__ == "__main__":
