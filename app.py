@@ -258,9 +258,14 @@ def generate():
         video_looped_tmp.close()
 
         concat_cmd = [
-            "ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", concat_list_tmp.name,
-            "-c", "copy", "-t", str(real_duration), video_looped_path,
-        ]
+    "ffmpeg", "-y", "-loglevel", "error", 
+    "-f", "concat", "-safe", "0", "-i", concat_list_tmp.name,
+    "-vf", "fps=30,format=yuv420p",  # forza 30fps costante
+    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+    "-t", str(real_duration), 
+    video_looped_path,
+]
+
         subprocess.run(concat_cmd, timeout=300, check=True)
         os.unlink(concat_list_tmp.name)
 
