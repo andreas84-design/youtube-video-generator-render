@@ -214,23 +214,29 @@ def generate():
             headers = {"Authorization": PEXELS_API_KEY}
             params = {"query": assignment['query'], "orientation": "landscape", "per_page": 1}
             
-            try:
-                resp = requests.get("https://api.pexels.com/videos/search", headers=headers, params=params, timeout=15)
-                if resp.status_code == 200 and resp.json().get('videos'):
-                    video_url = resp.json()['videos'][0]['video_files'][0]['link']
-                    
-                    tmp_clip = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-                    clip_resp = requests.get(video_url, stream=True, timeout=30)
-clip_resp.raise_for_status()
+                try:
+        resp = requests.get(
+            "https://api.pexels.com/videos/search",
+            headers=headers,
+            params=params,
+            timeout=15
+        )
+        if resp.status_code == 200 and resp.json().get('videos'):
+            video_url = resp.json()['videos'][0]['video_files'][0]['link']
 
-for chunk in clip_resp.iter_content(chunk_size=1024*1024):
-    if chunk:
-        tmp_clip.write(chunk)
-                    tmp_clip.close()
-                    scene_paths.append((tmp_clip.name, min(4.0, avg_scene_duration)))
-            except Exception as e:
-                print(f"⚠️ Errore download clip Pexels scena {assignment['scene']}: {e}", flush=True)
-                continue
+            tmp_clip = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+            clip_resp = requests.get(video_url, stream=True, timeout=30)
+            clip_resp.raise_for_status()
+            for chunk in clip_resp.iter_content(chunk_size=1024*1024):
+                if chunk:
+                    tmp_clip.write(chunk)
+            tmp_clip.close()
+
+            scene_paths.append((tmp_clip.name, min(4.0, avg_scene_duration)))
+
+    except Exception as e:
+        print(f"⚠️ Errore download clip Pexels scena {assignment['scene']}: {e}", flush=True)
+        continue
 
         print(f"✅ CLIPS SCARICATE: {len(scene_paths)}/25", flush=True)
 
