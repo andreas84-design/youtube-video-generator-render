@@ -10,6 +10,7 @@ import requests
 from flask import Flask, request, jsonify
 import boto3
 from botocore.config import Config
+from googletrans import Translator
 
 app = Flask(__name__)
 
@@ -78,6 +79,41 @@ def cleanup_old_videos(s3_client, current_key):
         print(f"⚠️  Errore rotazione R2 (video vecchi restano): {str(e)}")
 
 
+def translate_broll_keywords(keywords_text):
+    """Traduce keywords italiane → inglese DINAMICAMENTE usando Google Translate"""
+    if not keywords_text:
+        return "women health wellness sleep"
+    
+    try:
+        translator = Translator()
+        parts = [p.strip() for p in keywords_text.split(",") if p.strip()]
+        
+        translated = []
+        for part in parts:
+            result = translator.translate(part, src='it', dest='en')
+            translated.append(result.text.lower())
+        
+        broll_query = " ".join(translated)
+        print(f"🌐 Traduzione keywords: '{keywords_text}' → '{broll_query}'")
+        return broll_query[:100]
+        
+    except Exception as e:
+        print(f"⚠️ Errore traduzione Google Translate: {e}")
+        # Fallback dizionario base
+        fallback_map = {
+            "donne": "women",
+            "menopausa": "menopause",
+            "vampate": "hot flashes",
+            "sonno": "sleep",
+            "dimagrimento": "weight loss",
+            "benessere": "wellness",
+            "salute": "health",
+        }
+        parts = [p.strip().lower() for p in keywords_text.split(",")]
+        translated = [fallback_map.get(p, p) for p in parts]
+        return " ".join(translated)[:100]
+
+
 @app.route("/ffmpeg-test", methods=["GET"])
 def ffmpeg_test():
     result = subprocess.run(
@@ -114,62 +150,12 @@ def generate():
         audioduration = data.get("audioduration")
 
         # ===============================================
-        # PEXELS B-ROLL - SOLO keywords tradotte in inglese
+        # PEXELS B-ROLL - Keywords dal foglio tradotte dinamicamente
         # ===============================================
         sheet_keywords = data.get("keywords", "").strip()
 
-        # Dizionario traduzione specifica wellness/salute
-        translate_map = {
-            "donne": "women",
-            "menopausa": "menopause",
-            "vampate": "hot flashes",
-            "vampate di calore": "hot flashes",
-            "sonno": "sleep",
-            "insonnia": "insomnia",
-            "sonno disturbato": "insomnia",
-            "dimagrimento": "weight loss",
-            "pancia gonfia": "bloating",
-            "fame nervosa": "emotional eating",
-            "grasso": "fat",
-            "esercizio": "exercise",
-            "esercizio fisico": "exercise",
-            "dieta": "diet",
-            "benessere": "wellness",
-            "salute": "health",
-            "salute femminile": "women health",
-            "notte": "night",
-            "letto": "bed",
-            "stanchezza": "tired",
-            "sudorazione": "sweating",
-            "caldo": "hot",
-            "nottetempo": "night",
-            "riposo": "rest",
-            "relax": "relaxation",
-            "yoga": "yoga",
-            "meditazione": "meditation",
-        }
-
-        def translate_broll_keywords(keywords_text):
-            """Traduce keywords italiane → query Pexels inglese"""
-            if not keywords_text:
-                return "women health wellness sleep"
-            
-            parts = [p.strip() for p in keywords_text.split(",")]
-            translated = []
-            
-            for part in parts:
-                if not part:
-                    continue
-                lower_part = part.lower().strip()
-                translation = translate_map.get(lower_part, lower_part)
-                translated.append(translation)
-            
-            broll_query = " ".join(translated)
-            return broll_query[:100]
-
-        # GENERA QUERY PER PEXELS
+        # TRADUCI keywords italiane → inglese
         pexels_query = translate_broll_keywords(sheet_keywords)
-        print(f"🔍 DEBUG Pexels query da keywords '{sheet_keywords}' → '{pexels_query}'")
 
         if not audiobase64:
             return jsonify({
