@@ -17,16 +17,14 @@ app = Flask(__name__)
 R2_ACCESS_KEY_ID = os.environ.get("R2_ACCESS_KEY_ID")
 R2_SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY")
 R2_BUCKET_NAME = os.environ.get("R2_BUCKET_NAME")
-R2_PUBLIC_BASE_URL = os.environ.get("R2_PUBLIC_BASE_URL")  # es: https://pub-....r2.dev
+R2_PUBLIC_BASE_URL = os.environ.get("R2_PUBLIC_BASE_URL")
 R2_REGION = os.environ.get("R2_REGION", "auto")
-R2_ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID")  # opzionale, se vuoi usare endpoint account-scoped
+R2_ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID")
 
 
 def get_s3_client():
     """
     Client S3 configurato per Cloudflare R2.
-    Usa l'endpoint account-scoped se R2_ACCOUNT_ID è presente,
-    altrimenti solleva errore (meglio impostare sempre R2_ACCOUNT_ID).
     """
     if R2_ACCOUNT_ID:
         endpoint_url = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
@@ -46,6 +44,38 @@ def get_s3_client():
         config=Config(s3={"addressing_style": "virtual"}),
     )
     return s3_client
+
+
+def cleanup_old_videos(s3_client, current_key):
+    """
+    Cancella tutti i video MP4 in R2 TRANNE quello appena caricato.
+    Mantiene solo l'ultimo video pubblicato.
+    """
+    try:
+        # Lista TUTTI gli oggetti nel bucket
+        paginator = s3_client.get_paginator('list_objects_v2')
+        pages = paginator.paginate(Bucket=R2_BUCKET_NAME, Prefix="videos/")
+        
+        deleted_count = 0
+        for page in pages:
+            if 'Contents' not in page:
+                continue
+                
+            for obj in page['Contents']:
+                key = obj['Key']
+                # Cancella SOLO MP4 che NON sono il video appena caricato
+                if key.endswith('.mp4') and key != current_key:
+                    s3_client.delete_object(Bucket=R2_BUCKET_NAME, Key=key)
+                    deleted_count += 1
+                    print(f"🗑️  Cancellato vecchio video: {key}")
+        
+        if deleted_count > 0:
+            print(f"✅ Rotazione completata: {deleted_count} video vecchi rimossi")
+        else:
+            print("✅ Nessun video vecchio da rimuovere")
+            
+    except Exception as e:
+        print(f"⚠️  Errore rotazione R2 (video vecchi restano): {str(e)}")
 
 
 @app.route("/ffmpeg-test", methods=["GET"])
@@ -124,7 +154,6 @@ def generate():
             if not keywords_text:
                 return "women health wellness sleep"
             
-            # Splitta per virgole e pulisce
             parts = [p.strip() for p in keywords_text.split(",")]
             translated = []
             
@@ -132,15 +161,13 @@ def generate():
                 if not part:
                     continue
                 lower_part = part.lower().strip()
-                # Traduci se nel dizionario, altrimenti lascia originale
                 translation = translate_map.get(lower_part, lower_part)
                 translated.append(translation)
             
-            # Join con spazi (Pexels usa spazi, non virgole)
             broll_query = " ".join(translated)
-            return broll_query[:100]  # Pexels max ~100 char
+            return broll_query[:100]
 
-        # GENERA QUERY PER PEXELS - SOLO dalle keywords tradotte
+        # GENERA QUERY PER PEXELS
         pexels_query = translate_broll_keywords(sheet_keywords)
         print(f"🔍 DEBUG Pexels query da keywords '{sheet_keywords}' → '{pexels_query}'")
 
@@ -233,7 +260,7 @@ def generate():
         search_params = {
             "query": pexels_query,
             "orientation": "landscape",
-            "per_page": 30,  # fino a ~30 clip
+            "per_page": 30,
         }
         search_response = requests.get(
             "https://api.pexels.com/videos/search",
@@ -274,7 +301,6 @@ def generate():
             if not clip_url:
                 continue
 
-            # Scarica clip singola
             r = requests.get(clip_url, stream=True, timeout=120)
             r.raise_for_status()
             tmp_clip = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
@@ -284,7 +310,6 @@ def generate():
             tmp_clip.close()
             clip_path = tmp_clip.name
 
-            # Durata clip
             probe_clip = subprocess.run(
                 ["ffprobe", "-v", "error", "-show_entries", "format=duration",
                  "-of", "default=noprint_wrappers=1:nokey=1", clip_path],
@@ -311,7 +336,7 @@ def generate():
                 "duration": None,
             }), 500
 
-        # 5. Normalizza e concatena tutte le scene
+        # 5. Normalizza e concatena
         normalized_clips = []
         for i, (clip_path, _dur) in enumerate(scene_paths):
             normalized_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
@@ -352,7 +377,6 @@ def generate():
         subprocess.run(concat_cmd, timeout=300, check=True)
         os.unlink(concat_list_tmp.name)
 
-        # Cleanup clip normalizzati
         for norm_path in normalized_clips:
             try:
                 if os.path.exists(norm_path):
@@ -360,7 +384,7 @@ def generate():
             except Exception:
                 pass
 
-        # 6. final merge video+audio
+        # 6. final merge
         final_video_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         final_video_path = final_video_tmp.name
         final_video_tmp.close()
@@ -403,6 +427,10 @@ def generate():
         )
 
         public_url = f"{R2_PUBLIC_BASE_URL.rstrip('/')}/{object_key}"
+
+        # 8. ROTAZIONE R2 - Cancella tutti i video vecchi tranne questo
+        print("🔄 Avvio rotazione R2...")
+        cleanup_old_videos(s3_client, object_key)
 
         # cleanup locali
         try:
