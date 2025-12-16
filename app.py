@@ -306,7 +306,7 @@ def generate():
                     "-c:v",
                     "libx264",
                     "-preset",
-                    "fast",
+                    "ultrafast",
                     "-crf",
                     "23",
                     "-an",
