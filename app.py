@@ -416,7 +416,7 @@ def generate():
         subprocess.run(concat_cmd, timeout=300, check=True)
         os.unlink(concat_list_tmp.name)
 
-        # 5. Merge video + audio
+                # 5. Merge video + audio (senza tagli strani)
         final_video_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         final_video_path = final_video_tmp.name
         final_video_tmp.close()
@@ -431,11 +431,10 @@ def generate():
             "-i",
             audiopath,
             "-filter_complex",
-            "[0:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,"
-            "fade=t=in:st=0:d=0.3,fade=t=out:st=2:d=0.3[fg];"
-            "[fg]format=yuv420p[outv]",
+            "[0:v]scale=1920:1080:force_original_aspect_ratio=increase,"
+            "crop=1920:1080,format=yuv420p[v]",
             "-map",
-            "[outv]",
+            "[v]",
             "-map",
             "1:a",
             "-c:v",
