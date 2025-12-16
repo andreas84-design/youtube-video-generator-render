@@ -320,6 +320,8 @@ def generate():
             raise RuntimeError("Nessuna clip normalizzata disponibile")
 
                 # 4. Concat tutte le clip (con loop se necessario)
+        import math
+        
         # Calcola durata totale delle clip disponibili
         total_clips_duration = 0.0
         for norm_path in normalized_clips:
@@ -347,7 +349,7 @@ def generate():
         concat_list_tmp = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt")
 
         if total_clips_duration < real_duration:
-            loops_needed = int(real_duration / total_clips_duration) + 1
+            loops_needed = math.ceil(real_duration / total_clips_duration) + 1
             print(f"🔁 Loop clip {loops_needed}x per coprire audio", flush=True)
             for _ in range(loops_needed):
                 for norm_path in normalized_clips:
