@@ -287,37 +287,63 @@ def generate():
         # 3. Normalize clips
         normalized_clips = []
         for i, (clip_path, _dur) in enumerate(scene_paths):
-            normalized_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-            normalized_path = normalized_tmp.name
-            normalized_tmp.close()
+            try:
+                print(f"🔧 Normalizing clip {i+1}/{len(scene_paths)}: {clip_path}", flush=True)
+                
+                normalized_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+                normalized_path = normalized_tmp.name
+                normalized_tmp.close()
 
-            normalize_cmd = [
-                "ffmpeg",
-                "-y",
-                "-loglevel",
-                "error",
-                "-i",
-                clip_path,
-                "-vf",
-                "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,fps=30",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "fast",
-                "-crf",
-                "23",
-                "-an",
-                normalized_path,
-            ]
-            subprocess.run(normalize_cmd, timeout=120, check=True)
-            normalized_clips.append(normalized_path)
+                normalize_cmd = [
+                    "ffmpeg",
+                    "-y",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    clip_path,
+                    "-vf",
+                    "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,fps=30",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "fast",
+                    "-crf",
+                    "23",
+                    "-an",
+                    normalized_path,
+                ]
+                result = subprocess.run(normalize_cmd, timeout=120, check=True, 
+                                       capture_output=True, text=True)
+                
+                # Verifica che il file normalizzato esista e abbia dimensione > 0
+                if os.path.exists(normalized_path) and os.path.getsize(normalized_path) > 1000:
+                    normalized_clips.append(normalized_path)
+                    print(f"✅ Clip {i+1} normalizzata: {normalized_path}", flush=True)
+                else:
+                    print(f"⚠️  Clip {i+1} normalizzata ma file vuoto, SKIP", flush=True)
+                    if os.path.exists(normalized_path):
+                        os.unlink(normalized_path)
+                        
+            except subprocess.TimeoutExpired:
+                print(f"⚠️  Clip {i+1} TIMEOUT durante normalize, SKIP", flush=True)
+                if os.path.exists(normalized_path):
+                    os.unlink(normalized_path)
+            except subprocess.CalledProcessError as e:
+                print(f"⚠️  Clip {i+1} ERRORE FFmpeg: {e.stderr}, SKIP", flush=True)
+                if os.path.exists(normalized_path):
+                    os.unlink(normalized_path)
+            except Exception as e:
+                print(f"⚠️  Clip {i+1} ERRORE generico: {str(e)}, SKIP", flush=True)
 
-        print(f"🎞️ NORMALIZED CLIPS: {len(normalized_clips)}", flush=True)
+        print(f"🎞️ NORMALIZED CLIPS: {len(normalized_clips)}/{len(scene_paths)}", flush=True)
         for p in normalized_clips:
-            print(f"   - {p}", flush=True)
+            print(f"   ✓ {p}", flush=True)
 
         if not normalized_clips:
             raise RuntimeError("Nessuna clip normalizzata disponibile")
+        
+        if len(normalized_clips) < 3:
+            print(f"⚠️  Solo {len(normalized_clips)} clip normalizzate, ma procedo...", flush=True)
 
                 # 4. Concat tutte le clip (con loop se necessario)
         import math
