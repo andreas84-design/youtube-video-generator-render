@@ -149,7 +149,8 @@ def generate():
             )
 
         data = request.get_json(force=True) or {}
-        audiobase64 = data.get("audiobase64")
+        audiobase64 = data.get("audio_base64") or data.get("audiobase64")
+
 
         # --- SCRIPT (lista o stringa) ---
         raw_script = data.get("script", "")
