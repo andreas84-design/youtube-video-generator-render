@@ -285,7 +285,7 @@ def generate():
 
         print(f"✅ CLIPS SCARICATE: {len(scene_paths)}/25", flush=True)
 
-        # 3. Normalize clips
+                # 3. Normalize clips
         normalized_clips = []
         for i, (clip_path, _dur) in enumerate(scene_paths):
             try:
@@ -313,28 +313,27 @@ def generate():
                     "-an",
                     normalized_path,
                 ]
-                result = subprocess.run(normalize_cmd, timeout=120, check=True, 
-                                       capture_output=True, text=True)
-                
+                subprocess.run(normalize_cmd, timeout=120, check=True)
+
                 # Verifica che il file normalizzato esista e abbia dimensione > 0
                 if os.path.exists(normalized_path) and os.path.getsize(normalized_path) > 1000:
                     normalized_clips.append(normalized_path)
                     print(f"✅ Clip {i+1} normalizzata: {normalized_path}", flush=True)
                 else:
-                    print(f"⚠️  Clip {i+1} normalizzata ma file vuoto, SKIP", flush=True)
+                    print(f"⚠️ Clip {i+1} normalizzata ma file vuoto, SKIP", flush=True)
                     if os.path.exists(normalized_path):
                         os.unlink(normalized_path)
                         
             except subprocess.TimeoutExpired:
-                print(f"⚠️  Clip {i+1} TIMEOUT durante normalize, SKIP", flush=True)
+                print(f"⚠️ Clip {i+1} TIMEOUT durante normalize, SKIP", flush=True)
                 if os.path.exists(normalized_path):
                     os.unlink(normalized_path)
             except subprocess.CalledProcessError as e:
-                print(f"⚠️  Clip {i+1} ERRORE FFmpeg: {e.stderr}, SKIP", flush=True)
+                print(f"⚠️ Clip {i+1} ERRORE FFmpeg: {e.stderr}, SKIP", flush=True)
                 if os.path.exists(normalized_path):
                     os.unlink(normalized_path)
             except Exception as e:
-                print(f"⚠️  Clip {i+1} ERRORE generico: {str(e)}, SKIP", flush=True)
+                print(f"⚠️ Clip {i+1} ERRORE generico: {str(e)}, SKIP", flush=True)
 
         print(f"🎞️ NORMALIZED CLIPS: {len(normalized_clips)}/{len(scene_paths)}", flush=True)
         for p in normalized_clips:
@@ -344,9 +343,9 @@ def generate():
             raise RuntimeError("Nessuna clip normalizzata disponibile")
         
         if len(normalized_clips) < 3:
-            print(f"⚠️  Solo {len(normalized_clips)} clip normalizzate, ma procedo...", flush=True)
+            print(f"⚠️ Solo {len(normalized_clips)} clip normalizzate, ma procedo...", flush=True)
 
-                # 4. Concat tutte le clip (con loop se necessario)
+        # 4. Concat tutte le clip, cercando di coprire l'audio senza loopare una sola clip
         import math
         
         # Calcola durata totale delle clip disponibili
@@ -372,16 +371,19 @@ def generate():
             flush=True,
         )
 
-        # Crea il file di concat, loopando le clip se non bastano
+        # Crea il file di concat
         concat_list_tmp = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt")
 
-        if total_clips_duration < real_duration:
-            loops_needed = math.ceil(real_duration / total_clips_duration) + 1
-            print(f"🔁 Loop clip {loops_needed}x per coprire audio", flush=True)
+        if total_clips_duration < real_duration and len(normalized_clips) > 1:
+            # Loopiamo la SEQUENZA di clip (almeno 2), non una sola clip
+            loops_needed = math.ceil(real_duration / total_clips_duration)
+            print(f"🔁 Loop sequenza clip {loops_needed}x per coprire audio", flush=True)
             for _ in range(loops_needed):
                 for norm_path in normalized_clips:
                     concat_list_tmp.write(f"file '{norm_path}'\n")
         else:
+            # Se abbiamo una sola clip, la usiamo una sola volta.
+            # Il -t/ -shortest nel merge farà terminare il video correttamente.
             for norm_path in normalized_clips:
                 concat_list_tmp.write(f"file '{norm_path}'\n")
 
@@ -417,7 +419,7 @@ def generate():
         subprocess.run(concat_cmd, timeout=300, check=True)
         os.unlink(concat_list_tmp.name)
 
-                # 5. Merge video + audio (senza tagli strani)
+        # 5. Merge video + audio
         final_video_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         final_video_path = final_video_tmp.name
         final_video_tmp.close()
