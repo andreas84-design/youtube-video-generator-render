@@ -152,8 +152,14 @@ def generate():
         audiobase64 = data.get("audio_base64") or data.get("audiobase64")
 
 
-        # --- SCRIPT (lista o stringa) ---
-        raw_script = data.get("script", "")
+                # --- SCRIPT (lista o stringa) ---
+        raw_script = (
+            data.get("script")
+            or data.get("script_chunk")
+            or data.get("script_audio")
+            or data.get("script_completo")
+            or ""
+        )
         if isinstance(raw_script, list):
             script = " ".join(str(p).strip() for p in raw_script)
         else:
