@@ -352,8 +352,8 @@ def generate():
             print(f"⚠️ Solo {len(normalized_clips)} clip normalizzate, ma procedo...", flush=True)
 
         # 4. Concat tutte le clip, cercando di coprire l'audio senza loopare una sola clip
-        import math
-        
+                import math
+
         # Calcola durata totale delle clip disponibili
         total_clips_duration = 0.0
         for norm_path in normalized_clips:
@@ -377,23 +377,32 @@ def generate():
             flush=True,
         )
 
-        # Crea il file di concat
+        # Crea il file di concat con limite di entry per evitare timeout
+        MAX_CONCAT_ENTRIES = 150  # limite di sicurezza
+
         concat_list_tmp = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt")
+        entries_written = 0
 
         if total_clips_duration < real_duration and len(normalized_clips) > 1:
-            # Loopiamo la SEQUENZA di clip (almeno 2), non una sola clip
+            # Loopiamo la SEQUENZA di clip (almeno 2), ma con un limite massimo di entry
             loops_needed = math.ceil(real_duration / total_clips_duration)
             print(f"🔁 Loop sequenza clip {loops_needed}x per coprire audio", flush=True)
             for _ in range(loops_needed):
                 for norm_path in normalized_clips:
+                    if entries_written >= MAX_CONCAT_ENTRIES:
+                        break
                     concat_list_tmp.write(f"file '{norm_path}'\n")
+                    entries_written += 1
+                if entries_written >= MAX_CONCAT_ENTRIES:
+                    break
         else:
-            # Se abbiamo una sola clip, la usiamo una sola volta.
-            # Il -t/ -shortest nel merge farà terminare il video correttamente.
+            # Se bastano le clip una volta sola, o c'è una sola clip
             for norm_path in normalized_clips:
                 concat_list_tmp.write(f"file '{norm_path}'\n")
+                entries_written += 1
 
         concat_list_tmp.close()
+        print(f"📝 File concat con {entries_written} entries", flush=True)
 
         video_looped_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         video_looped_path = video_looped_tmp.name
@@ -422,7 +431,7 @@ def generate():
             str(real_duration),
             video_looped_path,
         ]
-        subprocess.run(concat_cmd, timeout=300, check=True)
+        subprocess.run(concat_cmd, timeout=600, check=True)
         os.unlink(concat_list_tmp.name)
 
         # 5. Merge video + audio
