@@ -10,6 +10,7 @@ from flask import Flask, request, jsonify
 import boto3
 from botocore.config import Config
 from deep_translator import GoogleTranslator
+import math
 
 app = Flask(__name__)
 
@@ -151,8 +152,7 @@ def generate():
         data = request.get_json(force=True) or {}
         audiobase64 = data.get("audio_base64") or data.get("audiobase64")
 
-
-                # --- SCRIPT (lista o stringa) ---
+        # --- SCRIPT (lista o stringa) ---
         raw_script = (
             data.get("script")
             or data.get("script_chunk")
@@ -291,12 +291,12 @@ def generate():
 
         print(f"✅ CLIPS SCARICATE: {len(scene_paths)}/25", flush=True)
 
-                # 3. Normalize clips
+        # 3. Normalize clips
         normalized_clips = []
         for i, (clip_path, _dur) in enumerate(scene_paths):
             try:
                 print(f"🔧 Normalizing clip {i+1}/{len(scene_paths)}: {clip_path}", flush=True)
-                
+
                 normalized_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
                 normalized_path = normalized_tmp.name
                 normalized_tmp.close()
@@ -321,7 +321,6 @@ def generate():
                 ]
                 subprocess.run(normalize_cmd, timeout=120, check=True)
 
-                # Verifica che il file normalizzato esista e abbia dimensione > 0
                 if os.path.exists(normalized_path) and os.path.getsize(normalized_path) > 1000:
                     normalized_clips.append(normalized_path)
                     print(f"✅ Clip {i+1} normalizzata: {normalized_path}", flush=True)
@@ -329,7 +328,7 @@ def generate():
                     print(f"⚠️ Clip {i+1} normalizzata ma file vuoto, SKIP", flush=True)
                     if os.path.exists(normalized_path):
                         os.unlink(normalized_path)
-                        
+
             except subprocess.TimeoutExpired:
                 print(f"⚠️ Clip {i+1} TIMEOUT durante normalize, SKIP", flush=True)
                 if os.path.exists(normalized_path):
@@ -347,12 +346,11 @@ def generate():
 
         if not normalized_clips:
             raise RuntimeError("Nessuna clip normalizzata disponibile")
-        
+
         if len(normalized_clips) < 3:
             print(f"⚠️ Solo {len(normalized_clips)} clip normalizzate, ma procedo...", flush=True)
 
         # 4. Concat tutte le clip, cercando di coprire l'audio senza loopare una sola clip
-                import math
 
         # Calcola durata totale delle clip disponibili
         total_clips_duration = 0.0
@@ -384,7 +382,6 @@ def generate():
         entries_written = 0
 
         if total_clips_duration < real_duration and len(normalized_clips) > 1:
-            # Loopiamo la SEQUENZA di clip (almeno 2), ma con un limite massimo di entry
             loops_needed = math.ceil(real_duration / total_clips_duration)
             print(f"🔁 Loop sequenza clip {loops_needed}x per coprire audio", flush=True)
             for _ in range(loops_needed):
@@ -396,7 +393,6 @@ def generate():
                 if entries_written >= MAX_CONCAT_ENTRIES:
                     break
         else:
-            # Se bastano le clip una volta sola, o c'è una sola clip
             for norm_path in normalized_clips:
                 concat_list_tmp.write(f"file '{norm_path}'\n")
                 entries_written += 1
