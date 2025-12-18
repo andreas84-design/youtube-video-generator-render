@@ -75,39 +75,134 @@ def cleanup_old_videos(s3_client, current_key):
         print(f"⚠️  Errore rotazione R2 (video vecchi restano): {str(e)}", flush=True)
 
 
-def translate_broll_keywords(keywords_text, script_context=""):
-    """Traduce il contesto di scena + (fallback) alcune keyword, per query Pexels più varie."""
-    if not keywords_text:
-        keywords_text = "donne, salute, benessere, sonno"
+# -------------------------------------------------
+# Mapping SCENA → QUERY PEXELS (canale dimagrimento 40+)
+# -------------------------------------------------
+def pick_visual_query(context: str, keywords_text: str = "") -> str:
+    """
+    Converte il contesto della scena (in italiano) in una query Pexels corta e visiva.
+    Pensato per nicchia: salute/dimagrimento donne 40+.
+    """
+    ctx = (context or "").lower()
 
+    # Sonno / stress / relax
+    if any(
+        w in ctx
+        for w in [
+            "sonno",
+            "dorm",
+            "insonnia",
+            "addormentar",
+            "rilassamento",
+            "stress",
+            "ansia",
+            "riposo",
+            "notte",
+        ]
+    ):
+        return "woman 45 sleeping bedroom"
+
+    # Alimentazione / cucina sana / pancia gonfia
+    if any(
+        w in ctx
+        for w in [
+            "alimentazione",
+            "dieta",
+            "cibo",
+            "pasto",
+            "colazione",
+            "pranzo",
+            "cena",
+            "verdure",
+            "frutta",
+            "pancia gonfia",
+            "gonfiore",
+            "mangiare",
+        ]
+    ):
+        return "woman 45 healthy food kitchen"
+
+    # Attività fisica / movimento / metabolismo attivo
+    if any(
+        w in ctx
+        for w in [
+            "camminata",
+            "passeggiata",
+            "camminare",
+            "allenamento",
+            "attività fisica",
+            "esercizio",
+            "metabolismo",
+            "muoversi",
+            "sport",
+            "yoga",
+            "workout",
+        ]
+    ):
+        return "woman 45 walking outdoor"
+
+    # Energia / stanchezza / burnout
+    if any(
+        w in ctx
+        for w in [
+            "energia",
+            "stanchezza",
+            "stanca",
+            "affaticamento",
+            "spossatezza",
+            "fiato corto",
+            "spenta",
+        ]
+    ):
+        return "tired woman 45 then energetic woman 45 home"
+
+    # Ormoni / menopausa / vampate / medico
+    if any(
+        w in ctx
+        for w in [
+            "ormoni",
+            "ormonale",
+            "menopausa",
+            "perimenopausa",
+            "vampata",
+            "vampate",
+            "sudorazione",
+            "medico",
+            "visita",
+            "analisi",
+            "ginecologo",
+        ]
+    ):
+        return "woman 45 doctor consultation"
+
+    # Mindset / motivazione / autostima
+    if any(
+        w in ctx
+        for w in [
+            "motivazione",
+            "autostima",
+            "mentalità",
+            "mindset",
+            "obiettivi",
+            "cambiare vita",
+            "costanza",
+            "disciplina",
+        ]
+    ):
+        return "confident woman 45 smiling outdoor"
+
+    # Se ho keywords generiche dal foglio, provo un minimo di traduzione singola
     try:
-        # 1) Prova a tradurre il PEZZO di script della scena (priorità)
-        context = (script_context or "").strip()
-        query_parts = []
-
-        if context:
-            context_en = GoogleTranslator(source="it", target="en").translate(context[:70])
-            query_parts.append(context_en.lower())
-
-        # 2) Aggiungi 2–3 keyword tradotte come supporto
-        parts = [p.strip() for p in keywords_text.split(",") if p.strip()]
-        for part in parts[:3]:
-            kw_en = GoogleTranslator(source="it", target="en").translate(part)
-            query_parts.append(kw_en.lower())
-
-        # 3) Costruisci query finale (max 80 char per sicurezza)
-        full_query = " ".join(query_parts).strip()[:80]
-
-        print(
-            f"🌐 Query Pexels: ctx='{script_context[:30]}' kw='{keywords_text}' → '{full_query}'",
-            flush=True,
-        )
-        return full_query or "women health wellness"
-
+        if keywords_text:
+            first_kw = keywords_text.split(",")[0].strip()
+            if first_kw:
+                kw_en = GoogleTranslator(source="it", target="en").translate(first_kw[:40])
+                return kw_en.lower()
     except Exception as e:
-        print(f"⚠️ Errore traduzione: {e}", flush=True)
-        # Fallback molto generico ma sicuro
-        return "women health wellness lifestyle"
+        print(f"⚠️ Errore traduzione keyword singola: {e}", flush=True)
+
+    # Fallback wellness generico
+    return "woman 45 wellness lifestyle"
 
 
 @app.route("/ffmpeg-test", methods=["GET"])
@@ -152,7 +247,7 @@ def generate():
         data = request.get_json(force=True) or {}
         audiobase64 = data.get("audio_base64") or data.get("audiobase64")
 
-                # --- SCRIPT (lista o stringa) ---
+        # --- SCRIPT (lista o stringa) ---
         raw_script = (
             data.get("script")
             or data.get("script_chunk")
@@ -244,18 +339,24 @@ def generate():
             timestamp = i * avg_scene_duration
             word_index = int(timestamp * words_per_second)
             if word_index < len(script_words):
-                scene_context = " ".join(script_words[word_index : word_index + 5])
+                scene_context = " ".join(script_words[word_index : word_index + 7])
             else:
-                scene_context = "wellness"
+                scene_context = "wellness donna 45 salute dimagrimento"
 
-            scene_query = translate_broll_keywords(sheet_keywords, scene_context)
+            # NUOVA LOGICA: mapping diretto → query corta
+            scene_query = pick_visual_query(scene_context, sheet_keywords)
+
+            print(
+                f"🌐 Query Pexels: ctx='{scene_context[:40]}' → '{scene_query}'",
+                flush=True,
+            )
 
             scene_assignments.append(
                 {
                     "scene": i + 1,
                     "timestamp": round(timestamp, 1),
-                    "context": scene_context[:30],
-                    "query": scene_query[:50],
+                    "context": scene_context[:60],
+                    "query": scene_query[:80],
                 }
             )
 
