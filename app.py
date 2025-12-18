@@ -11,6 +11,7 @@ import boto3
 from botocore.config import Config
 from deep_translator import GoogleTranslator
 import math
+import random
 
 app = Flask(__name__)
 
@@ -22,8 +23,9 @@ R2_PUBLIC_BASE_URL = os.environ.get("R2_PUBLIC_BASE_URL")
 R2_REGION = os.environ.get("R2_REGION", "auto")
 R2_ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID")
 
-# Pexels API
+# Pexels / Pixabay API
 PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY")
+PIXABAY_API_KEY = os.environ.get("PIXABAY_API_KEY")  # <--- nuova env var
 
 
 def get_s3_client():
@@ -76,11 +78,11 @@ def cleanup_old_videos(s3_client, current_key):
 
 
 # -------------------------------------------------
-# Mapping SCENA → QUERY PEXELS (canale dimagrimento 40+)
+# Mapping SCENA → QUERY visiva (canale dimagrimento 40+)
 # -------------------------------------------------
 def pick_visual_query(context: str, keywords_text: str = "") -> str:
     """
-    Converte il contesto della scena (in italiano) in una query Pexels corta e visiva.
+    Converte il contesto della scena (in italiano) in una query corta e visiva.
     Pensato per nicchia: salute/dimagrimento donne 40+.
     """
     ctx = (context or "").lower()
@@ -191,7 +193,7 @@ def pick_visual_query(context: str, keywords_text: str = "") -> str:
     ):
         return "confident woman 45 smiling outdoor"
 
-    # Se ho keywords generiche dal foglio, provo un minimo di traduzione singola
+    # Se ho keywords generiche dal foglio, provo traduzione
     try:
         if keywords_text:
             first_kw = keywords_text.split(",")[0].strip()
@@ -203,6 +205,107 @@ def pick_visual_query(context: str, keywords_text: str = "") -> str:
 
     # Fallback wellness generico
     return "woman 45 wellness lifestyle"
+
+
+def fetch_clip_for_scene(scene_number: int, query: str, avg_scene_duration: float):
+    """
+    Alterna automaticamente:
+    - scene pari  → Pexels
+    - scene dispari → Pixabay
+    con fallback incrociato se una delle due non trova risultati.
+    """
+    # Durata target max 4s per clip
+    target_duration = min(4.0, avg_scene_duration)
+
+    def download_file(url: str) -> str:
+        tmp_clip = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+        clip_resp = requests.get(url, stream=True, timeout=30)
+        clip_resp.raise_for_status()
+        for chunk in clip_resp.iter_content(chunk_size=1024 * 1024):
+            if chunk:
+                tmp_clip.write(chunk)
+        tmp_clip.close()
+        return tmp_clip.name
+
+    # --- PEXELS ---
+    def try_pexels():
+        if not PEXELS_API_KEY:
+            return None
+        headers = {"Authorization": PEXELS_API_KEY}
+        params = {
+            "query": query,
+            "orientation": "landscape",
+            "per_page": 3,
+            "page": random.randint(1, 3),
+        }
+        resp = requests.get(
+            "https://api.pexels.com/videos/search",
+            headers=headers,
+            params=params,
+            timeout=15,
+        )
+        if resp.status_code == 200 and resp.json().get("videos"):
+            videos = resp.json()["videos"]
+            video = random.choice(videos)
+            # Prendo il primo file MP4 landscape
+            file_link = None
+            for vf in video.get("video_files", []):
+                if vf.get("width", 0) >= 960:
+                    file_link = vf.get("link")
+                    break
+            if not file_link and video.get("video_files"):
+                file_link = video["video_files"][0]["link"]
+            if file_link:
+                return download_file(file_link)
+        return None
+
+    # --- PIXABAY ---
+    def try_pixabay():
+        if not PIXABAY_API_KEY:
+            return None
+        params = {
+            "key": PIXABAY_API_KEY,
+            "q": query,
+            "per_page": random.randint(3, 10),
+            "page": random.randint(1, 5),
+        }
+        resp = requests.get(
+            "https://pixabay.com/api/videos/",
+            params=params,
+            timeout=15,
+        )
+        data = resp.json() if resp.status_code == 200 else {}
+        hits = data.get("hits") or []
+        if hits:
+            video = random.choice(hits)
+            # uso small/tiny per velocità
+            videos = video.get("videos", {})
+            for quality in ["small", "tiny", "medium", "large"]:
+                if quality in videos and "url" in videos[quality]:
+                    return download_file(videos[quality]["url"])
+        return None
+
+    # ordine: pari Pexels→Pixabay, dispari Pixabay→Pexels
+    first, second = (try_pexels, try_pixabay) if scene_number % 2 == 0 else (try_pixabay, try_pexels)
+
+    for func in (first, second):
+        try:
+            path = func()
+            if path:
+                print(
+                    f"🎥 Scena {scene_number}: query '{query}' → clip da {'Pexels' if func is try_pexels else 'Pixabay'}",
+                    flush=True,
+                )
+                return path, target_duration
+        except Exception as e:
+            print(
+                f"⚠️ Errore download scena {scene_number} ({'Pexels' if func is try_pexels else 'Pixabay'}): {e}",
+                flush=True,
+            )
+            continue
+
+    print(f"⚠️ Nessuna clip per scena {scene_number} (query='{query}')", flush=True)
+    return None, None
 
 
 @app.route("/ffmpeg-test", methods=["GET"])
@@ -230,13 +333,13 @@ def generate():
     try:
         # Controllo config
         if not all(
-            [R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME, R2_PUBLIC_BASE_URL, PEXELS_API_KEY]
+            [R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME, R2_PUBLIC_BASE_URL]
         ):
             return (
                 jsonify(
                     {
                         "success": False,
-                        "error": "Config mancante (R2 o PEXELS_API_KEY)",
+                        "error": "Config R2 mancante",
                         "video_url": None,
                         "duration": None,
                     }
@@ -265,7 +368,6 @@ def generate():
         print(f"🔍 DEBUG: raw_script type = {type(raw_script)}, len = {len(str(raw_script))}", flush=True)
         print(f"🔍 DEBUG: script finale len = {len(script)}", flush=True)
         print(f"🔍 DEBUG: script prime 100 char = {script[:100]}", flush=True)
-        # --- END DEBUG ---
 
         # --- KEYWORDS (lista o stringa) ---
         raw_keywords = data.get("keywords", "")
@@ -284,7 +386,7 @@ def generate():
         audio_bytes = base64.b64decode(audiobase64)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as f:
             f.write(audio_bytes)
-            audiopath = f.name
+            audiopath_tmp = f.name
 
         audio_wav_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
         audio_wav_path = audio_wav_tmp.name
@@ -296,7 +398,7 @@ def generate():
             "-loglevel",
             "error",
             "-i",
-            audiopath,
+            audiopath_tmp,
             "-acodec",
             "pcm_s16le",
             "-ar",
@@ -304,7 +406,7 @@ def generate():
             audio_wav_path,
         ]
         subprocess.run(convert_audio_cmd, timeout=60, check=True)
-        os.unlink(audiopath)
+        os.unlink(audiopath_tmp)
         audiopath = audio_wav_path
 
         # 2. Real duration
@@ -339,15 +441,14 @@ def generate():
             timestamp = i * avg_scene_duration
             word_index = int(timestamp * words_per_second)
             if word_index < len(script_words):
-                scene_context = " ".join(script_words[word_index : word_index + 7])
+                scene_context = " ".join(script_words[word_index: word_index + 7])
             else:
                 scene_context = "wellness donna 45 salute dimagrimento"
 
-            # NUOVA LOGICA: mapping diretto → query corta
             scene_query = pick_visual_query(scene_context, sheet_keywords)
 
             print(
-                f"🌐 Query Pexels: ctx='{scene_context[:40]}' → '{scene_query}'",
+                f"🌐 Query visiva: ctx='{scene_context[:40]}' → '{scene_query}'",
                 flush=True,
             )
 
@@ -360,42 +461,19 @@ def generate():
                 }
             )
 
-        # 🔥 STEP 2: DOWNLOAD PEXELS
+        # 🔥 STEP 2: DOWNLOAD CLIP (Pexels + Pixabay alternati)
         for assignment in scene_assignments:
             print(
                 f"📍 Scene {assignment['scene']}: {assignment['timestamp']}s → '{assignment['context']}'",
                 flush=True,
             )
-
-            headers = {"Authorization": PEXELS_API_KEY}
-            params = {"query": assignment["query"], "orientation": "landscape", "per_page": 1}
-
-            try:
-                resp = requests.get(
-                    "https://api.pexels.com/videos/search",
-                    headers=headers,
-                    params=params,
-                    timeout=15,
-                )
-                if resp.status_code == 200 and resp.json().get("videos"):
-                    video_url = resp.json()["videos"][0]["video_files"][0]["link"]
-
-                    tmp_clip = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-                    clip_resp = requests.get(video_url, stream=True, timeout=30)
-                    clip_resp.raise_for_status()
-                    for chunk in clip_resp.iter_content(chunk_size=1024 * 1024):
-                        if chunk:
-                            tmp_clip.write(chunk)
-                    tmp_clip.close()
-
-                    scene_paths.append((tmp_clip.name, min(4.0, avg_scene_duration)))
-
-            except Exception as e:
-                print(
-                    f"⚠️ Errore download clip Pexels scena {assignment['scene']}: {e}",
-                    flush=True,
-                )
-                continue
+            clip_path, clip_dur = fetch_clip_for_scene(
+                assignment["scene"],
+                assignment["query"],
+                avg_scene_duration,
+            )
+            if clip_path and clip_dur:
+                scene_paths.append((clip_path, clip_dur))
 
         print(f"✅ CLIPS SCARICATE: {len(scene_paths)}/25", flush=True)
 
@@ -442,7 +520,7 @@ def generate():
                 if os.path.exists(normalized_path):
                     os.unlink(normalized_path)
             except subprocess.CalledProcessError as e:
-                print(f"⚠️ Clip {i+1} ERRORE FFmpeg: {e.stderr}, SKIP", flush=True)
+                print(f"⚠️ Clip {i+1} ERRORE FFmpeg: {e}", flush=True)
                 if os.path.exists(normalized_path):
                     os.unlink(normalized_path)
             except Exception as e:
@@ -459,8 +537,6 @@ def generate():
             print(f"⚠️ Solo {len(normalized_clips)} clip normalizzate, ma procedo...", flush=True)
 
         # 4. Concat tutte le clip, cercando di coprire l'audio senza loopare una sola clip
-
-        # Calcola durata totale delle clip disponibili
         total_clips_duration = 0.0
         for norm_path in normalized_clips:
             probe_cmd = [
@@ -483,8 +559,7 @@ def generate():
             flush=True,
         )
 
-        # Crea il file di concat con limite di entry per evitare timeout
-        MAX_CONCAT_ENTRIES = 150  # limite di sicurezza
+        MAX_CONCAT_ENTRIES = 150
 
         concat_list_tmp = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt")
         entries_written = 0
