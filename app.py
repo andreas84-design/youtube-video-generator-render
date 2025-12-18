@@ -84,79 +84,150 @@ def pick_visual_query(context: str, keywords_text: str = "") -> str:
     """
     Converte il contesto della scena (in italiano) in una query corta e visiva.
     Pensato per nicchia: salute/dimagrimento donne 40+.
+    Usa pattern più specifici (azione + luogo + mood) e, se possibile, integra le keyword.
     """
     ctx = (context or "").lower()
 
-    # Sonno / stress / relax
+    # --------- helper interno per costruire query strutturate ----------
+    def q(action: str, setting: str = "", mood: str = "", extra: str = "") -> str:
+        base = "woman 45"
+        parts = [base, action, setting, mood, extra]
+        return " ".join([p for p in parts if p]).strip()
+
+    # --------- pattern molto specifici ---------
+
+    # Routine mattutina
+    if any(w in ctx for w in ["mattina", "risveglio", "appena sveglia", "iniziare la giornata"]):
+        return q("morning routine", "bathroom mirror", "natural light")
+
+    # Routine serale / sonno
+    if any(w in ctx for w in ["prima di dormire", "sera tardi", "routine serale", "sonno profondo"]):
+        return q("night routine", "bedroom", "warm light")
+
+    # Fortemente “sonno / insonnia”
+    if any(
+        w in ctx
+        for w in ["insonnia", "non riesci a dormire", "non dormi", "svegli", "risvegli notturni"]
+    ):
+        return q("awake in bed", "bedroom", "stressed")
+
+    # Sonno generico / relax
     if any(
         w in ctx
         for w in [
             "sonno",
             "dorm",
-            "insonnia",
             "addormentar",
-            "rilassamento",
-            "stress",
-            "ansia",
             "riposo",
             "notte",
+            "rilassamento",
+            "rilassarsi",
         ]
     ):
-        return "woman 45 sleeping bedroom"
+        return q("sleeping", "bedroom", "relaxed")
 
-    # Alimentazione / cucina sana / pancia gonfia
+    # Pancia gonfia / digestione
+    if any(
+        w in ctx
+        for w in [
+            "pancia gonfia",
+            "gonfiore",
+            "gonfia",
+            "digestione",
+            "digerire",
+            "intestino",
+            "colon",
+        ]
+    ):
+        return "woman 45 bloated belly closeup bathroom"
+
+    # Bilancia / peso / kg
+    if any(w in ctx for w in ["bilancia", "pesarsi", "peso", "kg", "chili", "chilo"]):
+        return "woman 45 stepping on scale bathroom"
+
+    # Fame emotiva / cibo spazzatura
+    if any(
+        w in ctx
+        for w in ["fame emotiva", "fame nervosa", "comfort food", "patatine", "dolci", "junk food"]
+    ):
+        return "unhealthy junk food closeup woman hand couch"
+
+    # Alimentazione sana / piatto
     if any(
         w in ctx
         for w in [
             "alimentazione",
             "dieta",
-            "cibo",
             "pasto",
             "colazione",
             "pranzo",
             "cena",
             "verdure",
+            "insalata",
             "frutta",
-            "pancia gonfia",
-            "gonfiore",
-            "mangiare",
+            "piatto sano",
+            "porzioni",
         ]
     ):
-        return "woman 45 healthy food kitchen"
+        return q("preparing healthy meal", "kitchen", "focused", "colorful vegetables")
 
-    # Attività fisica / movimento / metabolismo attivo
+    # Bere acqua / idratazione
+    if any(w in ctx for w in ["bere acqua", "idrat", "bicchiere d'acqua", "bottiglia d'acqua"]):
+        return q("drinking water", "kitchen", "daylight")
+
+    # Camminata / passi / movimento leggero
     if any(
         w in ctx
         for w in [
             "camminata",
             "passeggiata",
             "camminare",
+            "10.000 passi",
+            "passi",
+            "marcia",
+        ]
+    ):
+        return q("brisk walking", "park outdoor", "daylight")
+
+    # Allenamento più intenso
+    if any(
+        w in ctx
+        for w in [
             "allenamento",
             "attività fisica",
             "esercizio",
-            "metabolismo",
-            "muoversi",
-            "sport",
-            "yoga",
             "workout",
+            "cardio",
+            "HIIT",
+            "aerobica",
         ]
     ):
-        return "woman 45 walking outdoor"
+        return q("home workout", "living room", "energetic")
+
+    # Yoga / stretching / respirazione
+    if any(
+        w in ctx
+        for w in ["yoga", "stretching", "respirazione", "respiro profondo", "rilassamento muscolare"]
+    ):
+        return q("doing yoga", "living room mat", "calm")
 
     # Energia / stanchezza / burnout
     if any(
         w in ctx
         for w in [
-            "energia",
             "stanchezza",
             "stanca",
             "affaticamento",
             "spossatezza",
             "fiato corto",
             "spenta",
+            "burnout",
         ]
     ):
-        return "tired woman 45 then energetic woman 45 home"
+        return "tired woman 45 sitting on sofa low energy"
+
+    if any(w in ctx for w in ["più energia", "piena di energia", "ritrovare energia"]):
+        return "energetic woman 45 walking outdoor sunny"
 
     # Ormoni / menopausa / vampate / medico
     if any(
@@ -169,13 +240,12 @@ def pick_visual_query(context: str, keywords_text: str = "") -> str:
             "vampata",
             "vampate",
             "sudorazione",
-            "medico",
-            "visita",
-            "analisi",
-            "ginecologo",
         ]
     ):
-        return "woman 45 doctor consultation"
+        return "woman 50 hot flashes fan window"
+
+    if any(w in ctx for w in ["medico", "visita", "analisi", "ginecologo", "specialista"]):
+        return "woman 45 doctor consultation office"
 
     # Mindset / motivazione / autostima
     if any(
@@ -189,21 +259,57 @@ def pick_visual_query(context: str, keywords_text: str = "") -> str:
             "cambiare vita",
             "costanza",
             "disciplina",
+            "abitudine",
         ]
     ):
-        return "confident woman 45 smiling outdoor"
+        return "confident woman 45 smiling city sunrise"
 
-    # Se ho keywords generiche dal foglio, provo traduzione
+    # Teoria / spiegazione (grafica, testo)
+    if any(
+        w in ctx
+        for w in [
+            "ricorda che",
+            "è importante sapere",
+            "gli studi dimostrano",
+            "ricerche scientifiche",
+            "secondo uno studio",
+            "vediamo perché",
+        ]
+    ):
+        return "health infographic animation metabolism"
+
+    # Liste / step / consigli
+    if any(
+        w in ctx
+        for w in [
+            "passo dopo passo",
+            "step",
+            "passaggi",
+            "consigli",
+            "strategie",
+            "ecco cosa fare",
+        ]
+    ):
+        return "checklist animation health tips"
+
+    # --------- uso opzionale delle keyword dal foglio ---------
     try:
         if keywords_text:
             first_kw = keywords_text.split(",")[0].strip()
             if first_kw:
-                kw_en = GoogleTranslator(source="it", target="en").translate(first_kw[:40])
-                return kw_en.lower()
+                kw_en = GoogleTranslator(source="it", target="en").translate(first_kw[:60])
+                kw_en = kw_en.lower()
+                # Se contiene concetti chiave, arricchisco la query generica
+                if any(w in kw_en for w in ["metabolism", "metabolic"]):
+                    return "woman 45 metabolism infographic animation"
+                if any(w in kw_en for w in ["belly", "bloating", "abdominal"]):
+                    return "woman 45 bloated belly closeup"
+                # fallback: uso direttamente la keyword tradotta
+                return kw_en
     except Exception as e:
         print(f"⚠️ Errore traduzione keyword singola: {e}", flush=True)
 
-    # Fallback wellness generico
+    # --------- fallback wellness generico ---------
     return "woman 45 wellness lifestyle"
 
 
