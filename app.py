@@ -152,7 +152,7 @@ def generate():
         data = request.get_json(force=True) or {}
         audiobase64 = data.get("audio_base64") or data.get("audiobase64")
 
-        # --- SCRIPT (lista o stringa) ---
+                # --- SCRIPT (lista o stringa) ---
         raw_script = (
             data.get("script")
             or data.get("script_chunk")
@@ -164,6 +164,13 @@ def generate():
             script = " ".join(str(p).strip() for p in raw_script)
         else:
             script = str(raw_script).strip()
+
+        # --- DEBUG ---
+        print(f"🔍 DEBUG: keys ricevute = {list(data.keys())}", flush=True)
+        print(f"🔍 DEBUG: raw_script type = {type(raw_script)}, len = {len(str(raw_script))}", flush=True)
+        print(f"🔍 DEBUG: script finale len = {len(script)}", flush=True)
+        print(f"🔍 DEBUG: script prime 100 char = {script[:100]}", flush=True)
+        # --- END DEBUG ---
 
         # --- KEYWORDS (lista o stringa) ---
         raw_keywords = data.get("keywords", "")
